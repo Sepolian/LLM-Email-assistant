@@ -79,7 +79,7 @@ class OpenAIClient:
                 # SDK not available; fall back to requests if api_base provided, else to stub
                 self._client = None
 
-    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, email_sender: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 512) -> Dict[str, Any]:
+    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, email_sender: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 2048, return_raw_response: bool = False) -> Dict[str, Any]:
         """Summarize an email and propose calendar events.
 
         If no OpenAI key / client present, returns a deterministic stub useful for local development and tests.
@@ -113,6 +113,15 @@ class OpenAIClient:
             "an array of proposed events. Respond with JSON only (no extra explanation).\n\n"
             "IMPORTANT: All proposed event datetimes must be expressed in Hong Kong local time (Asia/Hong_Kong, UTC+08:00). "
             "Use full ISO 8601 timestamps with timezone offset +08:00, e.g. 2025-11-24T10:00:00+08:00."
+            "DATE FORMAT RECOGNITION: When parsing dates from the email body, you must be aware of different date formats based on location:\n"
+            "- For locations in Europe, Asia (including Hong Kong, UK, Australia, etc.): Use DD/MM format (day/month)\n"
+            "- For locations in North America (US, Canada): Use MM/DD format (month/day)\n"
+            "- Infer the location from the sender's email domain, email content, or location mentioned in the email\n"
+            "- If the date format is ambiguous (e.g., 01/02 could be Jan 2 or Feb 1), use context clues like:\n"
+            "  * Sender's email domain (.com, .uk, .au, .hk, etc.)\n"
+            " * Location mentioned in the email\n"
+            " * Language and cultural context\n"
+            "- When in doubt or no location is specified, default to DD/MM format"
         )
 
         # include received/current time context to help the model propose sensible event datetimes
@@ -135,6 +144,7 @@ class OpenAIClient:
             "- proposals: an array (possibly empty) of objects with fields: title, start (ISO 8601), end (ISO 8601), attendees (array of emails), location, notes.\n"
             "If there are no scheduling intents, use an empty array for proposals. Return JSON only.\n\n"
             "IMPORTANT: Regardless of the timezone of any provided timestamps, return all proposal start/end datetimes in Hong Kong local time (Asia/Hong_Kong, UTC+08:00) using ISO 8601 with +08:00 offset."
+             "When parsing dates, consider the sender's location and use the appropriate date format (DD/MM for default or unspecified location, MM/DD for US/Canada)."
         )
 
         try:
@@ -161,6 +171,9 @@ class OpenAIClient:
                 r = requests.post(url, headers=headers, json=payload, timeout=30)
                 r.raise_for_status()
                 resp = r.json()
+                # Log full raw response for debugging
+                logger.info("=== Full Raw LLM Response (requests) ===")
+                logger.info(json.dumps(resp, indent=2, ensure_ascii=False))
                 # extract content similar to SDK shape
                 choices = resp.get('choices', [])
                 text = ''
@@ -171,6 +184,9 @@ class OpenAIClient:
                         text = c0.get('message', {}).get('content', '') or c0.get('text', '')
                     else:
                         text = ''
+                # Log extracted text content
+                logger.info("=== Extracted Text Content ===")
+                logger.info(text)
 
             else:
                 # use openai SDK
@@ -183,6 +199,39 @@ class OpenAIClient:
                     temperature=temperature,
                     max_tokens=max_tokens,
                 )
+
+                # Log full raw response for debugging
+                logger.info("=== Full Raw LLM Response (SDK) ===")
+                if isinstance(resp, dict):
+                    logger.info(json.dumps(resp, indent=2, ensure_ascii=False))
+                else:
+                    # For object-like responses, try to convert to dict
+                    try:
+                        resp_dict = {
+                            "id": getattr(resp, "id", None),
+                            "object": getattr(resp, "object", None),
+                            "created": getattr(resp, "created", None),
+                            "model": getattr(resp, "model", None),
+                            "choices": [
+                                {
+                                    "index": getattr(c, "index", None),
+                                    "message": {
+                                        "role": getattr(getattr(c, "message", None), "role", None),
+                                        "content": getattr(getattr(c, "message", None), "content", None),
+                                    } if hasattr(c, "message") else None,
+                                    "finish_reason": getattr(c, "finish_reason", None),
+                                } for c in (getattr(resp, "choices", []) or [])
+                            ],
+                            "usage": {
+                                "prompt_tokens": getattr(getattr(resp, "usage", None), "prompt_tokens", None),
+                                "completion_tokens": getattr(getattr(resp, "usage", None), "completion_tokens", None),
+                                "total_tokens": getattr(getattr(resp, "usage", None), "total_tokens", None),
+                            } if hasattr(resp, "usage") else None,
+                        }
+                        logger.info(json.dumps(resp_dict, indent=2, ensure_ascii=False))
+                    except Exception as e:
+                        logger.info(f"Raw response (object): {resp}")
+                        logger.info(f"Could not convert to dict: {e}")
 
                 text = ""
                 # OpenAI ChatCompletion response shape: choices[0].message.content
@@ -200,12 +249,50 @@ class OpenAIClient:
                     # some SDK versions put content directly at choices[0].text
                     if isinstance(choices[0], dict):
                         text = choices[0].get("text", "")
+                
+                # Log extracted text content
+                logger.info("=== Extracted Text Content ===")
+                logger.info(text)
 
             parsed = _extract_json(text)
-            if parsed is not None:
-                return parsed
-            # If parsing failed, return a conservative fallback with raw model output in notes
-            return {"text": text.strip(), "proposals": []}
+            result = parsed if parsed is not None else {"text": text.strip(), "proposals": []}
+            
+            # Include raw response in result if requested
+            if return_raw_response:
+                if self._use_requests:
+                    result["_raw_response"] = resp
+                else:
+                    # For SDK responses, convert to dict if needed
+                    if isinstance(resp, dict):
+                        result["_raw_response"] = resp
+                    else:
+                        try:
+                            result["_raw_response"] = {
+                                "id": getattr(resp, "id", None),
+                                "object": getattr(resp, "object", None),
+                                "created": getattr(resp, "created", None),
+                                "model": getattr(resp, "model", None),
+                                "choices": [
+                                    {
+                                        "index": getattr(c, "index", None),
+                                        "message": {
+                                            "role": getattr(getattr(c, "message", None), "role", None),
+                                            "content": getattr(getattr(c, "message", None), "content", None),
+                                        } if hasattr(c, "message") else None,
+                                        "finish_reason": getattr(c, "finish_reason", None),
+                                    } for c in (getattr(resp, "choices", []) or [])
+                                ],
+                                "usage": {
+                                    "prompt_tokens": getattr(getattr(resp, "usage", None), "prompt_tokens", None),
+                                    "completion_tokens": getattr(getattr(resp, "usage", None), "completion_tokens", None),
+                                    "total_tokens": getattr(getattr(resp, "usage", None), "total_tokens", None),
+                                } if hasattr(resp, "usage") else None,
+                            }
+                        except Exception:
+                            result["_raw_response"] = str(resp)
+                result["_raw_text"] = text
+            
+            return result
 
         except Exception as e:
             # On API error, raise to let caller decide; include message for debugging

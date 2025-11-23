@@ -5,3 +5,4 @@
 /tokens
 /src/llm_email_app/llm/__pycache__
 .env
+llm_email_app.log

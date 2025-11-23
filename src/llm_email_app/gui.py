@@ -14,12 +14,23 @@ from tkinter import ttk, messagebox
 from typing import Any, Dict, List
 from datetime import datetime, timedelta, timezone
 from calendar import monthrange
+import logging
 
 from llm_email_app.email.gmail_client import GmailClient
 from llm_email_app.auth.google_oauth import run_local_oauth_flow, delete_cached_token
 from llm_email_app.llm.openai_client import OpenAIClient
 from llm_email_app.calendar.gcal import GCalClient
 from llm_email_app.config import settings
+
+# Configure logging to output to console and file
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # Console output
+        logging.FileHandler('llm_email_app.log', encoding='utf-8')  # File output
+    ]
+)
 
 
 class LLMEmailGUI(tk.Tk):
@@ -297,7 +308,22 @@ class LLMEmailGUI(tk.Tk):
                 email_received_time=email.get("received"),
                 current_time=None,
                 email_sender=email.get("from"),
+                return_raw_response=True,
             )
+            
+            # Log raw response to GUI log window
+            if "_raw_response" in res:
+                self._log("=== Full Raw LLM Response ===")
+                import json
+                raw_resp_str = json.dumps(res["_raw_response"], indent=2, ensure_ascii=False)
+                # Split long response into multiple log lines for better readability
+                for line in raw_resp_str.split('\n'):
+                    self._log(line)
+            
+            if "_raw_text" in res:
+                self._log("=== Extracted Text Content ===")
+                self._log(res["_raw_text"])
+            
         except Exception as exc:
             self._log("LLM error:", exc)
             messagebox.showerror("LLM error", str(exc))
