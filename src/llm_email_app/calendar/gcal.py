@@ -3,7 +3,7 @@
 This client will create events in the user's primary calendar using the Google Calendar API.
 It uses `googleapiclient` when available and falls back to a stub when not configured.
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,11 +28,14 @@ class GCalClient:
             return
 
         try:
-            if not self.creds:
-                scopes = ['https://www.googleapis.com/auth/calendar.events']
-                # Try to obtain creds via oauth if not provided
-                self.creds = run_local_oauth_flow(scopes, name='gcal')
-            self.service = build('calendar', 'v3', credentials=self.creds)
+            # 只有在提供了 creds 时才构建服务
+            # 不自动触发 OAuth flow，应该由调用者（如 GUI）统一处理
+            if self.creds:
+                self.service = build('calendar', 'v3', credentials=self.creds)
+            else:
+                # 如果没有提供 creds，不自动触发 OAuth，返回 None service（使用 stubs）
+                logger.info('No credentials provided; GCalClient will use stubbed methods')
+                self.service = None
         except Exception as e:
             logger.exception('Failed to initialize Google Calendar service: %s', e)
             self.service = None
@@ -80,3 +83,126 @@ class GCalClient:
         except HttpError as e:
             logger.exception('Failed to create calendar event: %s', e)
             raise
+
+    def list_events(self, max_results: int = 50, time_min: Optional[str] = None, time_max: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get a list of calendar events.
+        
+        Args:
+            max_results: The maximum number of results to return
+            time_min: The start time (ISO 8601 format, optional)
+            time_max: The end time (ISO 8601 format, optional)
+        
+        Returns:
+            The list of events
+        """
+        if self.service is None:
+            logger.info('GCalClient not configured; returning empty list')
+            return []
+        
+        try:
+            events_result = self.service.events().list(
+                calendarId='primary',
+                maxResults=max_results,
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            events = events_result.get('items', [])
+            logger.info('Retrieved %d calendar events', len(events))
+            return events
+        except HttpError as e:
+            logger.exception('Failed to list calendar events: %s', e)
+            return []
+
+    def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """Get details of a single event.
+        
+        Args:
+            event_id: The ID of the event
+        
+        Returns:
+            The event details, or None if not found
+        """
+        if self.service is None:
+            logger.info('GCalClient not configured; returning None')
+            return None
+        
+        try:
+            event = self.service.events().get(calendarId='primary', eventId=event_id).execute()
+            return event
+        except HttpError as e:
+            logger.exception('Failed to get calendar event: %s', e)
+            return None
+
+    def update_event(self, event_id: str, updates: Dict[str, Any]) -> Optional[str]:
+        """Update a calendar event.
+        
+        Args:
+            event_id: The ID of the event to update
+            updates: A dictionary containing the fields to update (e.g., summary, description, start, end, etc.)
+        
+        Returns:
+            The ID of the updated event, or None if failed
+        """
+        if self.service is None:
+            logger.info('GCalClient not configured; cannot update event')
+            return None
+        
+        try:
+            # 先获取现有事件
+            event = self.service.events().get(calendarId='primary', eventId=event_id).execute()
+            
+            # 更新字段
+            for key, value in updates.items():
+                if key == 'title':
+                    event['summary'] = value
+                elif key == 'notes':
+                    event['description'] = value
+                elif key == 'start':
+                    if isinstance(value, str):
+                        event['start'] = {'dateTime': value, 'timeZone': updates.get('timeZone', 'UTC')}
+                    else:
+                        event['start'] = value
+                elif key == 'end':
+                    if isinstance(value, str):
+                        event['end'] = {'dateTime': value, 'timeZone': updates.get('timeZone', 'UTC')}
+                    else:
+                        event['end'] = value
+                else:
+                    event[key] = value
+            
+            # 保存更新
+            updated_event = self.service.events().update(
+                calendarId='primary',
+                eventId=event_id,
+                body=event,
+                sendUpdates='none'
+            ).execute()
+            
+            logger.info('Updated calendar event id=%s', updated_event.get('id'))
+            return updated_event.get('id')
+        except HttpError as e:
+            logger.exception('Failed to update calendar event: %s', e)
+            return None
+
+    def delete_event(self, event_id: str) -> bool:
+        """Delete a calendar event.
+        
+        Args:
+            event_id: The ID of the event to delete
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.service is None:
+            logger.info('GCalClient not configured; cannot delete event')
+            return False
+        
+        try:
+            self.service.events().delete(calendarId='primary', eventId=event_id, sendUpdates='none').execute()
+            logger.info('Deleted calendar event id=%s', event_id)
+            return True
+        except HttpError as e:
+            logger.exception('Failed to delete calendar event: %s', e)
+            return False
