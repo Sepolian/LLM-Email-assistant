@@ -79,11 +79,15 @@ class OpenAIClient:
                 # SDK not available; fall back to requests if api_base provided, else to stub
                 self._client = None
 
-    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, email_sender: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 2048, return_raw_response: bool = False) -> Dict[str, Any]:
+    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, email_sender: Optional[str] = None, temperature: float = 0.0, max_tokens: int = None, return_raw_response: bool = False) -> Dict[str, Any]:
         """Summarize an email and propose calendar events.
 
         If no OpenAI key / client present, returns a deterministic stub useful for local development and tests.
         """
+        # Use max_tokens from settings if not provided
+        if max_tokens is None:
+            max_tokens = settings.MAX_TOKEN
+        
         # If neither requests-based nor SDK client is configured, fall back to stub
         if not self._client and not self._use_requests:
             # deterministic fallback used in tests and local dev

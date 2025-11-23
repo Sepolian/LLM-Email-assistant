@@ -1,0 +1,13 @@
+# LLM API
+OPENAI_API_KEY=sk-your-api-key
+OPENAI_API_BASE=http://your-api-base
+OPENAI_MODEL=model-name
+
+# Google OAuth (Gmail + Google Calendar)
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8080/oauth2callback      # this is the default redirect uri for the google oauth flow
+
+# App settings
+MAX_TOKEN=5120
+DRY_RUN=false
