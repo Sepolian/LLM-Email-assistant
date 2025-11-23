@@ -5,7 +5,7 @@ This module implements a small `OpenAIClient` that will:
 - Fall back to a safe, deterministic stub response when no API key is available (so local dev and tests don't call the network).
 
 Behaviour contract (simple):
-- summarize_email(email_body: str) -> dict with keys:
+- summarize_email(email_body: str, email_sender: Optional[str] = None, ...) -> dict with keys:
   - text: short human-readable summary
   - proposals: list of events {title, start (ISO), end (ISO), attendees, location, notes}
 
@@ -79,7 +79,7 @@ class OpenAIClient:
                 # SDK not available; fall back to requests if api_base provided, else to stub
                 self._client = None
 
-    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 512) -> Dict[str, Any]:
+    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, email_sender: Optional[str] = None, temperature: float = 0.0, max_tokens: int = 512) -> Dict[str, Any]:
         """Summarize an email and propose calendar events.
 
         If no OpenAI key / client present, returns a deterministic stub useful for local development and tests.
@@ -107,7 +107,9 @@ class OpenAIClient:
 
         system_prompt = (
             "You are a helpful assistant that extracts scheduling information from a user's email. "
-            "Given the full email body, produce a short human-readable summary and, when scheduling is proposed, "
+            "Given the full email body and the sender, produce a short, clean, human-readable summary (include the sender's name if available), you should also translate the email content into English if it's not in English. "
+            "It is recommened to use as less words as possible to describe the email content. Never use more than 1 line to describe the email content. "
+            "You should consider the sender's context when summarizing the email and propose events accordingly. If it is a subscription or promotional email, you should report the true key information only. "
             "an array of proposed events. Respond with JSON only (no extra explanation).\n\n"
             "IMPORTANT: All proposed event datetimes must be expressed in Hong Kong local time (Asia/Hong_Kong, UTC+08:00). "
             "Use full ISO 8601 timestamps with timezone offset +08:00, e.g. 2025-11-24T10:00:00+08:00."
@@ -118,9 +120,15 @@ class OpenAIClient:
         if email_received_time:
             time_context += f"Email received at: {email_received_time}. "
         time_context += f"Current system time: {current_time}. "
+        
+        # include sender information if available
+        sender_context = ""
+        if email_sender:
+            sender_context = f"Email sender: {email_sender}. "
 
         user_prompt = (
             "Email:\n" + email_body + "\n\n"
+            + sender_context
             + time_context
             + "\nProduce a JSON object with keys:\n"
             "- text: brief summary string\n"
@@ -135,7 +143,7 @@ class OpenAIClient:
                 if not self.api_key or not self.model:
                     logger.warning("API key and model are required for custom API base. Falling back to stub.")
                     # Fall back to the stub response by re-evaluating the initial condition
-                    return self.summarize_email(email_body, email_received_time, current_time, temperature, max_tokens)
+                    return self.summarize_email(email_body, email_received_time, current_time, email_sender, temperature, max_tokens)
                 if not self.model:
                     raise RuntimeError("Model id must be provided via OPENAI_MODEL when using a remote API base")
 

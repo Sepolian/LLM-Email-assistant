@@ -25,7 +25,7 @@ def run_sample_pipeline():
     emails = gmail.fetch_recent_emails(max_results=3)
     for e in emails:
         print(f"\n--- Email from {e['from']}: {e['subject']}")
-        summary = openai.summarize_email(e['body'], email_received_time=e.get('received'), current_time=datetime.now(timezone.utc).isoformat())
+        summary = openai.summarize_email(e['body'], email_received_time=e.get('received'), current_time=datetime.now(timezone.utc).isoformat(), email_sender=e.get('from'))
         print("Summary:\n", summary['text'])
         proposals = summary.get('proposals', [])
         for p in proposals:

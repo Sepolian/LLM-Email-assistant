@@ -296,6 +296,7 @@ class LLMEmailGUI(tk.Tk):
                 email.get("body", ""),
                 email_received_time=email.get("received"),
                 current_time=None,
+                email_sender=email.get("from"),
             )
         except Exception as exc:
             self._log("LLM error:", exc)
