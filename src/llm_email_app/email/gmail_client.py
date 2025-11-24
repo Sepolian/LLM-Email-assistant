@@ -20,7 +20,6 @@ except Exception:
     HttpError = Exception  # type: ignore
 
 from llm_email_app.config import settings
-from llm_email_app.auth.google_oauth import run_local_oauth_flow
 
 
 class GmailClient:
@@ -114,7 +113,7 @@ class GmailClient:
 
         return {'id': msg.get('id'), 'from': from_hdr, 'subject': subject, 'body': body, 'received': received}
 
-    def fetch_recent_emails(self, max_results: int = 5) -> List[Dict]:
+    def fetch_recent_emails(self, page: int = 1, per_page: int = 20, days: int = 7) -> List[Dict]:
         """Return a list of recent emails in simplified dict form.
 
         Each item: {'id': str, 'from': str, 'subject': str, 'body': str}
@@ -134,10 +133,27 @@ class GmailClient:
                     'subject': 'Quick sync',
                     'body': "Can we do a quick sync tomorrow afternoon?"
                 }
-            ][:max_results]
+            ][:per_page]
 
         try:
-            resp = self.service.users().messages().list(userId='me', maxResults=max_results).execute()
+            q = f'newer_than:{days}d'
+            
+            # Get the list of messages
+            request = self.service.users().messages().list(userId='me', q=q, maxResults=per_page)
+            
+            # Handle pagination
+            if page > 1:
+                # To get to a specific page, we need to traverse the pages
+                # This is not efficient, but it's the way the API works
+                for _ in range(page - 1):
+                    response = request.execute()
+                    page_token = response.get('nextPageToken')
+                    if not page_token:
+                        return [] # Page number is out of range
+                    request = self.service.users().messages().list_next(request, response)
+
+            resp = request.execute()
+
             msgs = resp.get('messages', [])
             results = []
             for m in msgs:
@@ -388,4 +404,57 @@ class GmailClient:
             return True
         except HttpError as e:
             logger.exception('Failed to archive email: %s', e)
+            return False
+
+    def check_or_create_label(self, label_name: str) -> str:
+        """Check if a label exists, and create it if it doesn't.
+        
+        Args:
+            label_name: The name of the label
+        
+        Returns:
+            The ID of the label
+        """
+        if self.service is None:
+            logger.warning('Gmail service not available; cannot check or create label')
+            return 'stub-label-id'
+        
+        try:
+            # Check if label exists
+            labels = self.service.users().labels().list(userId='me').execute().get('labels', [])
+            for label in labels:
+                if label['name'] == label_name:
+                    return label['id']
+            
+            # Create label if it doesn't exist
+            label_body = {'name': label_name, 'labelListVisibility': 'labelShow', 'messageListVisibility': 'show'}
+            label = self.service.users().labels().create(userId='me', body=label_body).execute()
+            return label['id']
+        except HttpError as e:
+            logger.exception('Failed to check or create label: %s', e)
+            raise
+
+    def apply_labels_to_message(self, message_id: str, label_ids: List[str]) -> bool:
+        """Apply labels to a message.
+        
+        Args:
+            message_id: The ID of the message
+            label_ids: The IDs of the labels to apply
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.service is None:
+            logger.warning('Gmail service not available; cannot apply labels to message')
+            return False
+        
+        try:
+            self.service.users().messages().modify(
+                userId='me',
+                id=message_id,
+                body={'addLabelIds': label_ids}
+            ).execute()
+            return True
+        except HttpError as e:
+            logger.exception('Failed to apply labels to message: %s', e)
             return False

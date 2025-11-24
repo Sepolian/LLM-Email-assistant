@@ -10,3 +10,4 @@ This file mirrors the tracked todo list.
 6. Automatic event creation & confirmation flow
 7. Tests, docs & examples
 8. Security & deploy notes
+9. Add user-defined email rules and LLM-driven tagging workflow (RuleManager, label helpers, prompt/output format, tests)
