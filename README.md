@@ -22,15 +22,12 @@ python -m pip install -r requirements.txt
 ```powershell
 python -m llm_email_app.main
 ```
-
-Simple GUI for testing
-
-There's a light Tkinter GUI for quick manual testing. Launch it with:
+Launch GUI with:
 
 ```powershell
-# from project `app` folder
-$env:PYTHONPATH='src'; python -m llm_email_app.gui
+$env:PYTHONPATH='src'; python -m src.llm_email_app.main
 ```
+GUI at http://localhost:8000/
 
 The GUI lists recent emails (stubs by default), lets you summarize selected emails using the LLM client (stub if no API key), shows proposed events, and allows creating events (respects the `DRY_RUN` flag in `.env`).
 

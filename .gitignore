@@ -1,8 +1,4 @@
-/src/llm_email_app/__pycache__
-/src/llm_email_app/auth/__pycache__
-/src/llm_email_app/calendar/__pycache__
-/src/llm_email_app/email/__pycache__
 /tokens
-/src/llm_email_app/llm/__pycache__
+__pycache__/
 .env
 llm_email_app.log

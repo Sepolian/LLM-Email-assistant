@@ -15,7 +15,6 @@ except Exception:
     build = None  # type: ignore
     HttpError = Exception  # type: ignore
 
-from llm_email_app.auth.google_oauth import run_local_oauth_flow
 from llm_email_app.config import settings
 
 

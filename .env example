@@ -6,8 +6,9 @@ OPENAI_MODEL=model-name
 # Google OAuth (Gmail + Google Calendar)
 GOOGLE_CLIENT_ID=your-client-id
 GOOGLE_CLIENT_SECRET=your-client-secret
-GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8080/oauth2callback      # this is the default redirect uri for the google oauth flow
+GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/auth/callback      # Make sure this matches the URI in your Google Cloud Console
 
 # App settings
+SECRET_KEY=your-super-secret-key
 MAX_TOKEN=5120
 DRY_RUN=false
