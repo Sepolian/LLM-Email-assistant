@@ -2,13 +2,12 @@
 
 Replace stubs with real Gmail API calls using googleapiclient.discovery or the Gmail REST endpoints with authorized credentials.
 """
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import base64
 import email as py_email
 from email.utils import parseaddr
 import logging
-from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +19,13 @@ except Exception:
     HttpError = Exception  # type: ignore
 
 from llm_email_app.config import settings
+
+FOLDER_LABELS: Dict[str, str] = {
+    'inbox': 'INBOX',
+    'sent': 'SENT',
+    'drafts': 'DRAFT',
+    'junk': 'SPAM',
+}
 
 
 class GmailClient:
@@ -113,66 +119,152 @@ class GmailClient:
 
         return {'id': msg.get('id'), 'from': from_hdr, 'subject': subject, 'body': body, 'received': received}
 
-    def fetch_recent_emails(self, page: int = 1, per_page: int = 20, days: int = 7) -> List[Dict]:
-        """Return a list of recent emails in simplified dict form.
-
-        Each item: {'id': str, 'from': str, 'subject': str, 'body': str}
-        """
-        # If service missing (libs or config), return stubs for dev
-        if self.service is None:
-            return [
+    def _generate_stub_emails(self, label_key: str, limit: int) -> List[Dict[str, Any]]:
+        """Return deterministic stub data per mailbox for local development."""
+        now = datetime.now(timezone.utc)
+        fixtures = {
+            'inbox': [
                 {
-                    'id': 'stub-1',
+                    'id': 'stub-inbox-1',
                     'from': 'alice@example.com',
                     'subject': 'Meeting request: Q4 roadmap',
                     'body': 'Hi, can we meet next Tuesday at 10am to go over the Q4 roadmap? Regards, Alice'
                 },
                 {
-                    'id': 'stub-2',
+                    'id': 'stub-inbox-2',
                     'from': 'bob@example.com',
                     'subject': 'Quick sync',
-                    'body': "Can we do a quick sync tomorrow afternoon?"
+                    'body': 'Can we do a quick sync tomorrow afternoon?'
+                },
+            ],
+            'sent': [
+                {
+                    'id': 'stub-sent-1',
+                    'from': 'you@example.com',
+                    'subject': 'Weekly status recap',
+                    'body': 'Sent over the highlights for this week—let me know if questions.'
                 }
-            ][:per_page]
+            ],
+            'drafts': [
+                {
+                    'id': 'stub-draft-1',
+                    'from': 'you@example.com',
+                    'subject': 'Draft: Contract follow-up',
+                    'body': 'Need to confirm pricing section before sending.'
+                }
+            ],
+            'junk': [
+                {
+                    'id': 'stub-junk-1',
+                    'from': 'promo@example.net',
+                    'subject': 'Limited time winnings!!!',
+                    'body': 'Click now to claim your prize.'
+                }
+            ],
+        }
+        data = fixtures.get(label_key, fixtures['inbox'])
+        enriched: List[Dict[str, Any]] = []
+        for idx, item in enumerate(data):
+            enriched_item = dict(item)
+            if 'received' not in enriched_item:
+                enriched_item['received'] = (now - timedelta(hours=idx * 3)).isoformat()
+            enriched.append(enriched_item)
+        return enriched[:limit]
+
+    def _fetch_label_snapshot(self, label_key: str, page: int, per_page: int, days: int) -> Dict[str, Any]:
+        label_id = FOLDER_LABELS[label_key]
+        per_page = max(1, min(per_page, 50))
+
+        if self.service is None:
+            return {
+                'label': label_id,
+                'page': 1,
+                'has_next_page': False,
+                'items': self._generate_stub_emails(label_key, per_page)
+            }
 
         try:
             q = f'newer_than:{days}d'
-            
-            # Get the list of messages
-            request = self.service.users().messages().list(userId='me', q=q, maxResults=per_page)
-            
-            # Handle pagination
-            if page > 1:
-                # To get to a specific page, we need to traverse the pages
-                # This is not efficient, but it's the way the API works
-                for _ in range(page - 1):
-                    response = request.execute()
-                    page_token = response.get('nextPageToken')
-                    if not page_token:
-                        return [] # Page number is out of range
-                    request = self.service.users().messages().list_next(request, response)
+            kwargs = {
+                'userId': 'me',
+                'labelIds': [label_id],
+                'maxResults': per_page,
+                'q': q
+            }
+            request = self.service.users().messages().list(**kwargs)
+            current_page = 1
+            response = request.execute()
+            while current_page < page and response.get('nextPageToken'):
+                current_page += 1
+                request = self.service.users().messages().list(
+                    userId='me',
+                    labelIds=[label_id],
+                    maxResults=per_page,
+                    q=q,
+                    pageToken=response['nextPageToken']
+                )
+                response = request.execute()
 
-            resp = request.execute()
+            if current_page < page:
+                return {
+                    'label': label_id,
+                    'page': current_page,
+                    'has_next_page': False,
+                    'items': []
+                }
 
-            msgs = resp.get('messages', [])
-            results = []
+            msgs = response.get('messages', [])
+            results: List[Dict[str, Any]] = []
             for m in msgs:
                 mid = m.get('id')
+                if not mid:
+                    continue
                 full = self.service.users().messages().get(userId='me', id=mid, format='full').execute()
                 parsed = self._parse_message(full)
                 results.append(parsed)
-            return results
+
+            return {
+                'label': label_id,
+                'page': current_page,
+                'has_next_page': bool(response.get('nextPageToken')),
+                'items': results
+            }
         except HttpError as e:
-            logger.exception('Gmail API error: %s', e)
-            # fallback to stubs on API error
-            return [
-                {
-                    'id': 'stub-1',
-                    'from': 'alice@example.com',
-                    'subject': 'Meeting request: Q4 roadmap',
-                    'body': 'Hi, can we meet next Tuesday at 10am to go over the Q4 roadmap? Regards, Alice'
-                }
-            ]
+            logger.exception('Gmail API error while fetching label %s: %s', label_id, e)
+            return {
+                'label': label_id,
+                'page': 1,
+                'has_next_page': False,
+                'items': self._generate_stub_emails(label_key, per_page)
+            }
+
+    def fetch_mailbox_overview(
+        self,
+        active_folder: str = 'inbox',
+        page: int = 1,
+        per_page: int = 20,
+        days: int = 7
+    ) -> Dict[str, Any]:
+        """Fetch a multi-folder snapshot including inbox, sent, drafts, and junk."""
+        normalized = active_folder if active_folder in FOLDER_LABELS else 'inbox'
+        per_page = max(1, min(per_page, 50))
+        overview: Dict[str, Any] = {}
+        for folder_key in FOLDER_LABELS.keys():
+            folder_page = page if folder_key == normalized else 1
+            overview[folder_key] = self._fetch_label_snapshot(folder_key, folder_page, per_page, days)
+
+        return {
+            'active_folder': normalized,
+            'page': page,
+            'per_page': per_page,
+            'days': days,
+            'folders': overview
+        }
+
+    def fetch_recent_emails(self, page: int = 1, per_page: int = 20, days: int = 7) -> List[Dict]:
+        """Backward-compatible helper returning inbox items only."""
+        overview = self.fetch_mailbox_overview(active_folder='inbox', page=page, per_page=per_page, days=days)
+        return overview.get('folders', {}).get('inbox', {}).get('items', [])
 
     def fetch_emails_since(self, days: int = 7, max_results: Optional[int] = None) -> List[Dict]:
         """Fetch emails from the authenticated user's mailbox from the past `days` days.

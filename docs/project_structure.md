@@ -1,18 +1,22 @@
 # Project structure
 
-- `app/`
-  - `README.md` - quick project overview and run instructions
-  - `requirements.txt` - Python dependencies
-  - `.env.example` - environment variables template
-  - `src/llm_email_app/` - Python package
-    - `config.py` - central settings loaded from .env
-    - `main.py` - sample runner for the pipeline
-    - `llm/openai_client.py` - LLM wrapper (OpenAI format API)
-    - `auth/google_oauth.py` - Google OAuth helper (Gmail + Calendar)
-    - `email/gmail_client.py` - Gmail fetching and parsing
-    - `calendar/gcal.py` - Google Calendar event creation
-  - `docs/` - architecture and notes
-  - `tests/` - unit tests (pytest)
+- `README.md` - top-level overview and combined setup guide
+- `requirements.txt` - Python backend dependencies
+- `docs/` - additional notes (`project_structure.md`, `todo.md`)
+- `frontend/` - React single-page app
+  - `index.html` - root document served to the browser
+  - `app.jsx` - SPA bootstrap and router
+  - `pages/` - routed views (`Home.jsx`, `Email.jsx`, `Calendar.jsx`, `Settings.jsx`)
+- `src/llm_email_app/` - backend Python package
+  - `config.py` - environment-driven configuration
+  - `main.py` - entry point for the FastAPI app
+  - `api.py` - FastAPI route definitions
+  - `auth/` - Google OAuth helpers (`google_oauth.py`, `session.py`)
+  - `email/` - Gmail integration (`gmail_client.py` and helpers)
+  - `calendar/` - Google Calendar client (`gcal.py`)
+  - `llm/` - LLM adapters (`openai_client.py`)
+- `tests/` - pytest-based smoke and integration tests (`test_smoke.py`)
+- `tokens/` - runtime token cache (`google_token.json`)
 
 Next steps (implementation order):
 3. Implement OpenAI client and mapping of extracted data to calendar event models.
