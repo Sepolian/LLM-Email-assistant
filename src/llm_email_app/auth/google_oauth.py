@@ -25,6 +25,14 @@ TOKEN_DIR.mkdir(parents=True, exist_ok=True)
 # 统一使用 'google' 作为 token 文件名，支持 Gmail 和 GCal
 DEFAULT_TOKEN_NAME = 'google'
 
+# Default OAuth scopes required by the app. Include gmail.modify so delete/archive work.
+DEFAULT_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar",
+]
+
 
 def get_web_flow(scopes: list = None) -> Any:
     """Create a Google OAuth Flow for a web application."""
@@ -49,11 +57,7 @@ def get_web_flow(scopes: list = None) -> Any:
     }
     
     if scopes is None:
-        scopes = [
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.send",
-            "https://www.googleapis.com/auth/calendar",
-        ]
+        scopes = DEFAULT_SCOPES
 
     flow = Flow.from_client_config(client_config, scopes=scopes, redirect_uri=redirect_uri)
     return flow

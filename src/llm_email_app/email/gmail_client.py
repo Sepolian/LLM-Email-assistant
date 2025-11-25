@@ -24,8 +24,17 @@ FOLDER_LABELS: Dict[str, str] = {
     'inbox': 'INBOX',
     'sent': 'SENT',
     'drafts': 'DRAFT',
-    'junk': 'SPAM',
+    'trash': 'TRASH',
 }
+
+FOLDER_ALIASES: Dict[str, str] = {
+    'junk': 'trash',  # backward compatibility for legacy front-end routes
+}
+
+
+def canonical_folder_key(folder: Optional[str]) -> str:
+    key = (folder or 'inbox').lower()
+    return FOLDER_ALIASES.get(key, key)
 
 
 class GmailClient:
@@ -153,9 +162,9 @@ class GmailClient:
                     'body': 'Need to confirm pricing section before sending.'
                 }
             ],
-            'junk': [
+            'trash': [
                 {
-                    'id': 'stub-junk-1',
+                    'id': 'stub-trash-1',
                     'from': 'promo@example.net',
                     'subject': 'Limited time winnings!!!',
                     'body': 'Click now to claim your prize.'
@@ -245,8 +254,9 @@ class GmailClient:
         per_page: int = 20,
         days: int = 7
     ) -> Dict[str, Any]:
-        """Fetch a multi-folder snapshot including inbox, sent, drafts, and junk."""
-        normalized = active_folder if active_folder in FOLDER_LABELS else 'inbox'
+        """Fetch a multi-folder snapshot including inbox, sent, drafts, and trash."""
+        normalized_key = canonical_folder_key(active_folder)
+        normalized = normalized_key if normalized_key in FOLDER_LABELS else 'inbox'
         per_page = max(1, min(per_page, 50))
         overview: Dict[str, Any] = {}
         for folder_key in FOLDER_LABELS.keys():
@@ -418,24 +428,17 @@ class GmailClient:
             raise
 
     def delete_email(self, message_id: str) -> bool:
-        """Delete an email.
-        
-        Args:
-            message_id: The ID of the email to delete
-        
-        Returns:
-            True if successful, False otherwise
-        """
+        """Move an email to Gmail Trash."""
         if self.service is None:
-            logger.warning('Gmail service not available; cannot delete email')
+            logger.warning('Gmail service not available; cannot move email to trash')
             return False
-        
+
         try:
-            self.service.users().messages().delete(userId='me', id=message_id).execute()
-            logger.info('Email deleted successfully, id: %s', message_id)
+            self.service.users().messages().trash(userId='me', id=message_id).execute()
+            logger.info('Email moved to trash, id: %s', message_id)
             return True
         except HttpError as e:
-            logger.exception('Failed to delete email: %s', e)
+            logger.exception('Failed to move email to trash: %s', e)
             return False
 
     def mark_as_read(self, message_id: str, read: bool = True) -> bool:

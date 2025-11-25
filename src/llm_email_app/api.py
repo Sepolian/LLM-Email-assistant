@@ -14,7 +14,7 @@ from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 from google.oauth2.credentials import Credentials
 from llm_email_app.auth.session import login, auth_callback, get_credentials
 from llm_email_app.config import settings, BASE_DIR
-from llm_email_app.email.gmail_client import GmailClient
+from llm_email_app.email.gmail_client import GmailClient, canonical_folder_key
 from llm_email_app.calendar.gcal import GCalClient
 from typing import Dict, Any, List, Optional, Tuple
 from llm_email_app.auth.google_oauth import TOKEN_DIR
@@ -185,7 +185,7 @@ def get_emails(
     folder: str = 'inbox'
 ):
     capped_per_page = min(per_page, 20)
-    normalized_folder = (folder or 'inbox').lower()
+    normalized_folder = canonical_folder_key(folder)
     mailbox = gmail_client.fetch_mailbox_overview(
         active_folder=normalized_folder,
         page=page,

@@ -2,7 +2,7 @@ const FOLDER_DISPLAY = [
   { key: 'inbox', label: '收件箱' },
   { key: 'sent', label: '已发送' },
   { key: 'drafts', label: '草稿' },
-  { key: 'junk', label: '垃圾箱' },
+  { key: 'trash', label: '回收站' },
 ];
 
 const EmailView = ({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSelectEmail, page, onPageChange, activeFolder, onFolderChange }) => {
