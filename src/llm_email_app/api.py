@@ -112,6 +112,8 @@ app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 
 app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
 
+SPA_ROUTES = {"calendar", "email", "settings"}
+
 app.add_route("/login", route=login, methods=["GET"])
 app.add_route("/auth/callback", route=auth_callback, methods=["GET"])
 
@@ -282,3 +284,16 @@ def delete_calendar_event(event_id: str, gcal_client: GCalClient = Depends(get_g
     if not gcal_client.delete_event(event_id):
         raise HTTPException(status_code=404, detail="Event not found or delete failed")
     return {"success": True}
+
+
+@app.get("/{spa_path}", include_in_schema=False)
+def serve_spa_routes(spa_path: str):
+    """Serve the single-page app for direct deep links like /calendar."""
+    if spa_path in SPA_ROUTES:
+        return FileResponse('frontend/index.html')
+    raise HTTPException(status_code=404, detail="Not found")
+
+
+@app.get("/{spa_path}/", include_in_schema=False)
+def serve_spa_routes_with_slash(spa_path: str):
+    return serve_spa_routes(spa_path)
