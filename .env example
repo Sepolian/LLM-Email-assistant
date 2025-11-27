@@ -11,5 +11,6 @@ GOOGLE_OAUTH_REDIRECT_URI="http://localhost:8000/auth/callback"
 
 # App settings
 SECRET_KEY=your-super-secret-key
+BACKEND_PORT=8000
 MAX_TOKEN=5120
 DRY_RUN=false

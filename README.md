@@ -10,18 +10,16 @@ Features (planned):
 
 Quick start
 1. Copy `.env.example` to `.env` and fill credentials for OpenAI, Google OAuth and Microsoft (Azure) app.
-2. Create a Python virtual env and install dependencies:
+2. customize port for the app if you like (defult 8000)
+3. Create a Python virtual env and install dependencies:
 
 ```powershell
 python -m venv .venv; .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
 ```
 
-3. Run the sample pipeline (dry-run):
+3. Run the sample pipeline:
 
-```powershell
-python -m llm_email_app.main
-```
 Launch GUI with:
 
 ```powershell
