@@ -553,3 +553,42 @@ class GmailClient:
         except HttpError as e:
             logger.exception('Failed to apply labels to message: %s', e)
             return False
+        
+    def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single Gmail message by ID and parse it into a dict with id, from, subject, body, received."""
+        if self.service is None:
+            # Stub fallback: return a fake message for local dev
+            return {
+                "id": message_id,
+                "from": "stub@example.com",
+                "subject": "Stub email",
+                "body": "This is a stubbed email body for testing.",
+                "received": datetime.now(timezone.utc).isoformat(),
+            }
+        try:
+            full = self.service.users().messages().get(
+                userId="me", id=message_id, format="full"
+            ).execute()
+
+            # Use your existing parser
+            parsed = self._parse_message(full)
+
+            # Add fallbacks if body is empty
+            if not parsed.get("body"):
+                parsed["body"] = full.get("snippet") or ""
+                # Sometimes raw payload exists
+                if not parsed["body"]:
+                    payload = full.get("payload", {})
+                    data = payload.get("body", {}).get("data")
+                    if data:
+                        try:
+                            parsed["body"] = base64.urlsafe_b64decode(data.encode("utf-8")).decode(
+                                "utf-8", errors="replace"
+                            )
+                        except Exception:
+                            parsed["body"] = ""
+
+            return parsed
+        except HttpError as e:
+            logger.exception("Failed to fetch Gmail message %s: %s", message_id, e)
+            return None

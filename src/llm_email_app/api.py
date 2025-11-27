@@ -5,9 +5,9 @@ import logging
 import calendar as cal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from fastapi.staticfiles import StaticFiles
 
 from fastapi import FastAPI, Depends, HTTPException
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse
@@ -19,6 +19,10 @@ from llm_email_app.calendar.gcal import GCalClient
 from typing import Dict, Any, List, Optional, Tuple
 from llm_email_app.auth.google_oauth import TOKEN_DIR
 import json
+
+from .email import gmail_client as gmail_module
+from .llm import openai_client
+from llm_email_app.llm.openai_client import OpenAIClient
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +114,15 @@ app = FastAPI()
 
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 
-app.mount("/frontend", StaticFiles(directory="frontend"), name="frontend")
+# Serve frontend from project root (not src/)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # -> project root
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
+if FRONTEND_DIR.exists():
+    # mount at /frontend so requests like /frontend/pages/Email.jsx succeed
+    app.mount("/frontend", StaticFiles(directory=str(FRONTEND_DIR)), name="frontend_static")
+
+# use absolute path when returning index.html
+INDEX_HTML = FRONTEND_DIR / "index.html"
 
 SPA_ROUTES = {"calendar", "email", "settings"}
 
@@ -174,7 +186,9 @@ def get_gcal_client(request: Request) -> GCalClient:
 
 @app.get("/")
 def read_root():
-    return FileResponse('frontend/index.html')
+    if INDEX_HTML.exists():
+        return FileResponse(str(INDEX_HTML))
+    raise HTTPException(status_code=404, detail="index.html not found")
 
 @app.get("/emails", response_model=Dict[str, Any])
 def get_emails(
@@ -297,3 +311,36 @@ def serve_spa_routes(spa_path: str):
 @app.get("/{spa_path}/", include_in_schema=False)
 def serve_spa_routes_with_slash(spa_path: str):
     return serve_spa_routes(spa_path)
+
+@app.post("/api/emails/{message_id}/summarize")
+def summarize_email(message_id: str, gmail_client: GmailClient = Depends(get_gmail_client)):
+    # Fetch the message content
+    msg = gmail_client.get_message(message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Email not found")
+
+    # Extract sender and body
+    email_from = msg.get("from") if isinstance(msg, dict) else None
+    content = None
+    if isinstance(msg, dict):
+        content = msg.get("html") or msg.get("body") or msg.get("snippet") or msg.get("raw")
+    else:
+        content = str(msg)
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Email content not found")
+
+    # Call the OpenAI client directly
+    client = OpenAIClient()
+    try:
+        result = client.summarize_email(
+            email_body=content,
+            email_sender=email_from,
+        )
+        return JSONResponse({
+            "summary": result.get("text", ""),
+            "proposals": result.get("proposals", [])
+        })
+    except Exception as exc:
+        logger.exception("Summarization failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Summarization failed")

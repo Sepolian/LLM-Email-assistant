@@ -21,7 +21,6 @@ import logging
 
 from llm_email_app.config import settings
 
-
 def _extract_json(text: str) -> Optional[dict]:
     """Try to extract the first JSON object from a model response.
 
@@ -79,7 +78,7 @@ class OpenAIClient:
                 # SDK not available; fall back to requests if api_base provided, else to stub
                 self._client = None
 
-    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, email_sender: Optional[str] = None, temperature: float = 0.0, max_tokens: int = None, return_raw_response: bool = False) -> Dict[str, Any]:
+    def summarize_email(self, email_body: str, email_received_time: Optional[str] = None, current_time: Optional[str] = None, email_sender: Optional[str] = None, temperature: float = 0.0, max_tokens: int = settings.MAX_TOKEN, return_raw_response: bool = False) -> Dict[str, Any]:
         """Summarize an email and propose calendar events.
 
         If no OpenAI key / client present, returns a deterministic stub useful for local development and tests.
@@ -301,3 +300,4 @@ class OpenAIClient:
         except Exception as e:
             # On API error, raise to let caller decide; include message for debugging
             raise RuntimeError(f"OpenAI-format API call failed: {e}")
+    
