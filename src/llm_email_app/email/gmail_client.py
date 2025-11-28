@@ -553,7 +553,7 @@ class GmailClient:
         except HttpError as e:
             logger.exception('Failed to apply labels to message: %s', e)
             return False
-        
+
     def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
         """Fetch a single Gmail message by ID and parse it into a dict with id, from, subject, body, received."""
         if self.service is None:

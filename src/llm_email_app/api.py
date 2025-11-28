@@ -5,6 +5,7 @@ import logging
 import calendar as cal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 from fastapi.staticfiles import StaticFiles
 
 from fastapi import FastAPI, Depends, HTTPException
@@ -20,8 +21,6 @@ from typing import Dict, Any, List, Optional, Tuple
 from llm_email_app.auth.google_oauth import TOKEN_DIR
 import json
 
-from .email import gmail_client as gmail_module
-from .llm import openai_client
 from llm_email_app.llm.openai_client import OpenAIClient
 
 logger = logging.getLogger(__name__)
@@ -30,9 +29,11 @@ TMP_DIR = (BASE_DIR / 'tmp')
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 EMAIL_CACHE_PATH = TMP_DIR / 'emails_recent.json'
 CALENDAR_CACHE_PATH = TMP_DIR / 'calendar_recent.json'
+MESSAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{6,256}$")
 
 
 def _coerce_datetime(value: Optional[str]) -> Optional[datetime]:
+    """Best-effort conversion of loose datetime strings into aware datetime objects."""
     if not value:
         return None
     try:
@@ -99,6 +100,22 @@ def _persist_calendar(events: List[Dict[str, Any]], window_days: int = 365) -> N
     _write_temp_json(CALENDAR_CACHE_PATH, snapshot)
 
 
+def _calendar_snapshot_is_stale(max_age: timedelta = timedelta(minutes=30)) -> bool:
+    """Return True when the cached ±1 year snapshot should be refreshed."""
+    try:
+        if not CALENDAR_CACHE_PATH.exists():
+            return True
+        payload = json.loads(CALENDAR_CACHE_PATH.read_text(encoding='utf-8'))
+        generated_at = payload.get('generated_at')
+        generated_dt = _coerce_datetime(generated_at)
+        if not generated_dt:
+            return True
+        return datetime.now(timezone.utc) - generated_dt > max_age
+    except Exception as exc:
+        logger.warning('Unable to determine calendar snapshot freshness: %s', exc)
+        return True
+
+
 def _month_bounds(month_str: str) -> Tuple[datetime, datetime]:
     try:
         year, month = map(int, month_str.split('-'))
@@ -108,6 +125,13 @@ def _month_bounds(month_str: str) -> Tuple[datetime, datetime]:
         return first, last
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid month format, expected YYYY-MM") from exc
+
+
+def _validate_message_id_or_400(message_id: str) -> str:
+    candidate = (message_id or '').strip()
+    if not candidate or not MESSAGE_ID_PATTERN.fullmatch(candidate):
+        raise HTTPException(status_code=400, detail="Invalid message_id format")
+    return candidate
 
 
 app = FastAPI()
@@ -263,15 +287,16 @@ def get_calendar_events(
 
     events = gcal_client.list_events(max_results=max_results, time_min=time_min, time_max=time_max)
 
-    snapshot_events = events
     if gcal_client.service is not None:
-        snapshot_events = gcal_client.list_events(
-            max_results=max(max_results, 500),
-            time_min=(now - timedelta(days=365)).isoformat(),
-            time_max=(now + timedelta(days=365)).isoformat(),
-        )
-
-    _persist_calendar(snapshot_events, window_days=365)
+        if _calendar_snapshot_is_stale():
+            snapshot_events = gcal_client.list_events(
+                max_results=max(max_results, 500),
+                time_min=(now - timedelta(days=365)).isoformat(),
+                time_max=(now + timedelta(days=365)).isoformat(),
+            )
+            _persist_calendar(snapshot_events, window_days=365)
+    else:
+        _persist_calendar(events, window_days=365)
     return events
 
 @app.post("/calendar/events", response_model=Dict[str, str])
@@ -304,7 +329,7 @@ def delete_calendar_event(event_id: str, gcal_client: GCalClient = Depends(get_g
 def serve_spa_routes(spa_path: str):
     """Serve the single-page app for direct deep links like /calendar."""
     if spa_path in SPA_ROUTES:
-        return FileResponse('frontend/index.html')
+        return FileResponse(str(INDEX_HTML))
     raise HTTPException(status_code=404, detail="Not found")
 
 
@@ -314,8 +339,9 @@ def serve_spa_routes_with_slash(spa_path: str):
 
 @app.post("/api/emails/{message_id}/summarize")
 def summarize_email(message_id: str, gmail_client: GmailClient = Depends(get_gmail_client)):
+    safe_message_id = _validate_message_id_or_400(message_id)
     # Fetch the message content
-    msg = gmail_client.get_message(message_id)
+    msg = gmail_client.get_message(safe_message_id)
     if not msg:
         raise HTTPException(status_code=404, detail="Email not found")
 

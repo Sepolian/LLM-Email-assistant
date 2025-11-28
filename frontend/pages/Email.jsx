@@ -1,9 +1,9 @@
 // Email.jsx
 
-// NOTE: DOMPurify is loaded globally via <script src="https://unpkg.com/dompurify@3.0.6/dist/purify.min.js">
-// so we just use window.DOMPurify here.
+// NOTE: DOMPurify is loaded globally via <script src="https://unpkg.com/dompurify@3.3.0/dist/purify.min.js">
+// so we just use window.DOMPurify here, with defensive fallbacks if unavailable.
 
-const { useState, useMemo, useEffect } = React;
+const { useState, useMemo, useEffect, useRef } = React;
 
 const FOLDER_DISPLAY = [
   { key: 'inbox', label: '收件箱' },
@@ -14,17 +14,32 @@ const FOLDER_DISPLAY = [
 
 const EmailDetailView = ({ email, onBack }) => {
   const { useMemo } = React;
+  const domPurify = typeof window === "undefined" ? null : window.DOMPurify;
 
-  // Detect if the body looks like HTML
-  const looksLikeHtml = useMemo(
-    () => /<\/?[a-z][\s\S]*>/i.test(String(email.body || "")),
-    [email.body]
-  );
+  const bodyString = useMemo(() => String(email.body || ""), [email.body]);
+
+  // Detect if the body looks like HTML only when DOMPurify is ready.
+  const looksLikeHtml = useMemo(() => {
+    if (!domPurify) {
+      return false;
+    }
+    const candidate = bodyString;
+    const lt = candidate.indexOf('<');
+    const gt = candidate.indexOf('>');
+    if (lt === -1 || gt === -1 || gt <= lt) {
+      return false;
+    }
+    // Basic heuristic: check for balanced-looking tags without relying on regex literals
+    const closing = candidate.indexOf('</', lt + 1);
+    const opening = candidate.indexOf('<', lt + 1);
+    const hasSecondTag = opening !== -1 && (opening + 1 < candidate.length) && candidate[opening + 1] !== ' ';
+    return closing !== -1 || hasSecondTag;
+  }, [bodyString, domPurify]);
 
   // Sanitize if HTML
   const sanitizedHtml = useMemo(
-    () => (looksLikeHtml ? DOMPurify.sanitize(String(email.body)) : ""),
-    [email.body, looksLikeHtml]
+    () => (looksLikeHtml && domPurify ? domPurify.sanitize(bodyString) : ""),
+    [bodyString, looksLikeHtml, domPurify]
   );
 
   return (
@@ -74,7 +89,7 @@ const EmailDetailView = ({ email, onBack }) => {
             margin: "0 auto"
           }}
         >
-          {email.body}
+          {bodyString}
         </div>
       )}
     </div>
@@ -88,33 +103,44 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
   const displayEmails = emails.slice(0, perPage);
   const isEmpty = !loading && displayEmails.length === 0;
 
-  const [viewing, setViewing] = useState(selectedEmail || null);
+  const [viewingEmail, setViewingEmail] = useState(selectedEmail || null);
+  const latestViewingIdRef = useRef(viewingEmail?.id || null);
+  useEffect(() => {
+    latestViewingIdRef.current = viewingEmail?.id || null;
+  }, [viewingEmail]);
 
   // summary state lifted here
   const [summary, setSummary] = useState(null);
   const [summarizing, setSummarizing] = useState(false);
 
   useEffect(() => {
-    setViewing(selectedEmail || null);
+    setViewingEmail(selectedEmail || null);
     setSummary(null);       // reset summary when switching emails
     setSummarizing(false);
   }, [selectedEmail]);
 
   const handleSummarize = async () => {
-    if (!viewing) return;
+    if (!viewingEmail) return;
+    const currentEmailId = viewingEmail.id;
     setSummarizing(true);
     setSummary(null);
     try {
-      const res = await fetch(`/api/emails/${encodeURIComponent(viewing.id)}/summarize`, {
+      const res = await fetch(`/api/emails/${encodeURIComponent(currentEmailId)}/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
       const data = await res.json();
-      setSummary(data.summary || JSON.stringify(data));
+      if (latestViewingIdRef.current === currentEmailId) {
+        setSummary(data.summary || JSON.stringify(data));
+      }
     } catch (err) {
-      setSummary(`Request failed: ${err.message}`);
+      if (latestViewingIdRef.current === currentEmailId) {
+        setSummary(`Request failed: ${err.message}`);
+      }
     } finally {
-      setSummarizing(false);
+      if (latestViewingIdRef.current === currentEmailId) {
+        setSummarizing(false);
+      }
     }
   };
 
@@ -134,7 +160,7 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
               <div
                 key={e.id || e.message_id || e.mid}
                 style={{ padding: 8, borderBottom: '1px solid #eee', cursor: 'pointer' }}
-                onClick={() => { onSelectEmail && onSelectEmail(e); setViewing(e); }}
+                onClick={() => { onSelectEmail && onSelectEmail(e); setViewingEmail(e); }}
               >
                 <strong>{e.subject}</strong>
                 <div style={{ fontSize: 12, color: '#666' }}>{e.from}</div>
@@ -191,9 +217,9 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
 
       {/* Right-hand detail view + summary block */}
       <div style={{ flex: 1, background: '#fff', borderRadius: 6, boxShadow: '0 0 0 1px #eee inset' }}>
-        {viewing ? (
+        {viewingEmail ? (
           <>
-            <EmailDetailView email={viewing} onBack={() => setViewing(null)} />
+            <EmailDetailView email={viewingEmail} onBack={() => setViewingEmail(null)} />
 
             {/* Summary block OUTSIDE, right under the email content */}
             <div style={{ marginTop: 16, maxWidth: "800px", margin: "0 auto", padding: 16 }}>
