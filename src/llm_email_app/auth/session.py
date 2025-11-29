@@ -4,6 +4,7 @@ from llm_email_app.auth.google_oauth import get_web_flow, TOKEN_DIR, DEFAULT_SCO
 import json
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from typing import Optional, Dict
 
 SCOPES = [
     "openid",
@@ -82,3 +83,15 @@ def get_credentials(request: Request):
 
     creds_json = json.loads(request.session["credentials"])
     return creds_json
+
+
+def load_persisted_credentials() -> Optional[Dict]:
+    """Return credentials stored on disk, if the user previously authenticated."""
+    token_file = TOKEN_DIR / "google_token.json"
+    if not token_file.exists():
+        return None
+    try:
+        with open(token_file, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None

@@ -97,10 +97,57 @@ const EmailDetailView = ({ email, onBack }) => {
 };
 
 function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSelectEmail, page, onPageChange, activeFolder, onFolderChange }) {
-  const folderData = mailbox?.folders?.[activeFolder] || { items: [], page, has_next_page: false };
+  const folders = mailbox?.folders || {};
+  const folderData = folders[activeFolder] || { items: [], page: 1, has_next_page: false };
   const emails = folderData.items || [];
   const perPage = mailbox?.per_page || 20;
-  const displayEmails = emails.slice(0, perPage);
+
+  const allEmails = useMemo(() => {
+    return Object.values(mailbox?.folders || {}).reduce((acc, entry) => {
+      if (entry?.items) {
+        acc.push(...entry.items);
+      }
+      return acc;
+    }, []);
+  }, [mailbox]);
+
+  const availableLabels = useMemo(() => {
+    const set = new Set();
+    allEmails.forEach((item) => (item.labels || []).forEach((lbl) => set.add(lbl)));
+    return Array.from(set);
+  }, [allEmails]);
+
+  const labelFolders = useMemo(() => (
+    availableLabels.map((lbl) => ({ key: `label:${lbl}`, label: lbl, isLabel: true }))
+  ), [availableLabels]);
+
+  const folderCounts = useMemo(() => {
+    const counts = {};
+    Object.entries(mailbox?.folders || {}).forEach(([key, data]) => {
+      counts[key] = data?.items?.length || 0;
+    });
+    return counts;
+  }, [mailbox]);
+
+  const labelCounts = useMemo(() => {
+    const counts = {};
+    allEmails.forEach((item) => {
+      (item.labels || []).forEach((lbl) => {
+        counts[lbl] = (counts[lbl] || 0) + 1;
+      });
+    });
+    return counts;
+  }, [allEmails]);
+
+  const derivedEmails = useMemo(() => {
+    if (activeFolder && activeFolder.startsWith('label:')) {
+      const labelName = activeFolder.replace('label:', '');
+      return allEmails.filter((item) => (item.labels || []).includes(labelName));
+    }
+    return emails;
+  }, [activeFolder, emails, allEmails]);
+
+  const displayEmails = derivedEmails.slice(0, perPage);
   const isEmpty = !loading && displayEmails.length === 0;
 
   const [viewingEmail, setViewingEmail] = useState(selectedEmail || null);
@@ -145,31 +192,94 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
   };
 
   return (
-    <div style={{ display: 'flex', gap: 12 }}>
-      {/* Left-hand column */}
-      <div style={{ display: 'flex', flexDirection: 'column', width: 320, maxHeight: '70vh' }}>
-        
-        {/* Email list */}
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: '180px 360px 1fr', gap: 12, minHeight: '70vh' }}>
+      {/* Folder column */}
+      <div style={{ background: '#fff', borderRadius: 8, padding: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.05)', height: 'fit-content' }}>
+        <h4 style={{ margin: '0 0 8px 0', fontSize: 14 }}>文件夹</h4>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {FOLDER_DISPLAY.map(({ key, label }) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onFolderChange && onFolderChange(key)}
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                padding: '8px 10px',
+                borderRadius: 8,
+                border: '1px solid',
+                borderColor: activeFolder === key ? '#2563eb' : '#e2e8f0',
+                background: activeFolder === key ? '#dbeafe' : '#fff',
+                cursor: 'pointer',
+                fontWeight: activeFolder === key ? 600 : 500,
+              }}
+            >
+              <span>{label}</span>
+              <span style={{ fontSize: 12, color: '#64748b' }}>{folderCounts[key] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+        {labelFolders.length > 0 && (
+          <>
+            <h4 style={{ margin: '16px 0 8px 0', fontSize: 14 }}>自定义标签</h4>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {labelFolders.map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => onFolderChange && onFolderChange(key)}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    padding: '8px 10px',
+                    borderRadius: 8,
+                    border: '1px solid',
+                    borderColor: activeFolder === key ? '#2563eb' : '#e2e8f0',
+                    background: activeFolder === key ? '#dbeafe' : '#fff',
+                    cursor: 'pointer',
+                    fontWeight: activeFolder === key ? 600 : 500,
+                  }}
+                >
+                  <span>{label}</span>
+                  <span style={{ fontSize: 12, color: '#64748b' }}>{labelCounts[label] || 0}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Email list column */}
+      <div style={{ display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 8, padding: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+        <div style={{ flex: 1, overflowY: 'auto', borderTop: '1px solid #f1f5f9' }}>
           {loading ? (
             <p>Loading...</p>
           ) : isEmpty ? (
             <p>没有邮件</p>
           ) : (
-            displayEmails.map(e => (
+            displayEmails.map((e) => (
               <div
                 key={e.id || e.message_id || e.mid}
-                style={{ padding: 8, borderBottom: '1px solid #eee', cursor: 'pointer' }}
+                style={{ padding: 10, borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
                 onClick={() => { onSelectEmail && onSelectEmail(e); setViewingEmail(e); }}
               >
-                <strong>{e.subject}</strong>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ fontSize: 14 }}>{e.subject || '(无主题)'}</strong>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>{new Date(e.received || Date.now()).toLocaleDateString()}</span>
+                </div>
                 <div style={{ fontSize: 12, color: '#666' }}>{e.from}</div>
+                <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {(e.labels || []).map((lbl) => (
+                    <span key={lbl} style={{ fontSize: 11, padding: '2px 6px', borderRadius: 999, background: '#eef2ff', color: '#4338ca' }}>{lbl}</span>)
+                  )}
+                </div>
               </div>
             ))
           )}
         </div>
 
-        {/* Pagination controls directly under the list */}
         <div style={{
           display: 'flex',
           justifyContent: 'center',
@@ -215,8 +325,8 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
         </div>
       </div>
 
-      {/* Right-hand detail view + summary block */}
-      <div style={{ flex: 1, background: '#fff', borderRadius: 6, boxShadow: '0 0 0 1px #eee inset' }}>
+      {/* Detail column */}
+      <div style={{ background: '#fff', borderRadius: 6, boxShadow: '0 0 0 1px #eee inset' }}>
         {viewingEmail ? (
           <>
             <EmailDetailView email={viewingEmail} onBack={() => setViewingEmail(null)} />

@@ -1,11 +1,15 @@
 import os
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
+import asyncio
 import logging
 import calendar as cal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
+from threading import Lock
+import time
+import uuid
 from fastapi.staticfiles import StaticFiles
 
 from fastapi import FastAPI, Depends, HTTPException
@@ -13,7 +17,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 from google.oauth2.credentials import Credentials
-from llm_email_app.auth.session import login, auth_callback, get_credentials
+from llm_email_app.auth.session import login, auth_callback, get_credentials, load_persisted_credentials
 from llm_email_app.config import settings, BASE_DIR
 from llm_email_app.email.gmail_client import GmailClient, canonical_folder_key
 from llm_email_app.calendar.gcal import GCalClient
@@ -22,6 +26,7 @@ from llm_email_app.auth.google_oauth import TOKEN_DIR
 import json
 
 from llm_email_app.llm.openai_client import OpenAIClient
+from llm_email_app.email.rules import RuleManager, ProcessedEmailStore
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,19 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 EMAIL_CACHE_PATH = TMP_DIR / 'emails_recent.json'
 CALENDAR_CACHE_PATH = TMP_DIR / 'calendar_recent.json'
 MESSAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{6,256}$")
+
+RULE_MANAGER = RuleManager(settings.AUTO_LABEL_RULES_PATH, settings.AUTO_LABEL_ENABLED_DEFAULT)
+PROCESSED_STORE = ProcessedEmailStore(settings.AUTO_LABEL_PROCESSED_PATH)
+AUTOMATION_STATUS_LOCK = Lock()
+AUTOMATION_LOG_MAX = 50
+AUTOMATION_STATUS: Dict[str, Any] = {
+    'last_run_at': None,
+    'last_error': None,
+    'last_labeled': 0,
+    'last_refresh_at': None,
+    'logs': [],
+}
+LLM_CLIENT = OpenAIClient()
 
 
 def _coerce_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -55,6 +73,16 @@ def _write_temp_json(path: Path, payload: Dict[str, Any]) -> None:
         path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
     except Exception as exc:
         logger.warning('Unable to persist snapshot at %s: %s', path, exc)
+
+
+def _read_cached_payload(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        if not path.exists():
+            return None
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception as exc:
+        logger.warning('Unable to read cached payload at %s: %s', path, exc)
+        return None
 
 
 def _persist_recent_emails(mailbox: Dict[str, Any], window_days: int = 14) -> None:
@@ -134,9 +162,221 @@ def _validate_message_id_or_400(message_id: str) -> str:
     return candidate
 
 
+def _update_automation_status(**fields: Any) -> None:
+    with AUTOMATION_STATUS_LOCK:
+        AUTOMATION_STATUS.update(fields)
+
+
+def _automation_status_snapshot() -> Dict[str, Any]:
+    with AUTOMATION_STATUS_LOCK:
+        snapshot = dict(AUTOMATION_STATUS)
+        snapshot['logs'] = list(AUTOMATION_STATUS.get('logs', []))
+        return snapshot
+
+
+def _append_automation_log(message: str, level: str = 'info') -> None:
+    entry = {
+        'id': uuid.uuid4().hex,
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'level': level,
+        'message': message,
+    }
+    with AUTOMATION_STATUS_LOCK:
+        logs = AUTOMATION_STATUS.setdefault('logs', [])
+        logs.append(entry)
+        if len(logs) > AUTOMATION_LOG_MAX:
+            del logs[:-AUTOMATION_LOG_MAX]
+
+
+def _require_credentials(request: Request) -> Dict[str, Any]:
+    creds_json = get_credentials(request)
+    if not creds_json:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return creds_json
+
+
+def _auto_label_recent_emails(gmail_client: GmailClient) -> int:
+    rules_state = RULE_MANAGER.get_state()
+    rules = rules_state.get('rules', [])
+    if not rules:
+        return 0
+
+    lookback_days = max(1, settings.AUTO_LABEL_LOOKBACK_DAYS)
+    batch_target = max(1, settings.AUTO_LABEL_MAX_PER_CYCLE)
+    delay_seconds = max(0.0, settings.AUTO_LABEL_REQUEST_INTERVAL_SECONDS)
+    # fetch extra to account for already-processed entries
+    candidates = gmail_client.fetch_emails_since(days=lookback_days, max_results=batch_target * 3)
+
+    labeled_count = 0
+    for email_payload in candidates:
+        message_id = email_payload.get('id')
+        if not message_id or PROCESSED_STORE.is_processed(message_id):
+            continue
+
+        detail = gmail_client.get_message(message_id) or email_payload
+        body = detail.get('html') or detail.get('body') or detail.get('snippet') or ''
+        subject = detail.get('subject') or email_payload.get('subject') or ''
+        sender = detail.get('from') or email_payload.get('from') or ''
+
+        if not body and not subject:
+            continue
+
+        try:
+            evaluation = LLM_CLIENT.evaluate_label_rules(
+                email_body=body,
+                subject=subject,
+                sender=sender,
+                rules=rules,
+            )
+        except Exception as exc:
+            logger.warning('LLM label evaluation failed for %s: %s', message_id, exc)
+            _append_automation_log(f"LLM 失败（{message_id}）：{exc}", level='error')
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            continue
+
+        matches = evaluation.get('matches') or []
+        if not matches:
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            continue
+
+        applied_any = False
+        for match in matches:
+            rule_id = match.get('rule_id')
+            if not rule_id:
+                continue
+            rule = next((r for r in rules if r.get('id') == rule_id), None)
+            if not rule:
+                continue
+            label_name = (rule.get('label') or '').strip()
+            if not label_name:
+                continue
+            try:
+                label_id = gmail_client.check_or_create_label(label_name)
+            except Exception as exc:
+                logger.warning('Unable to ensure label %s: %s', label_name, exc)
+                continue
+
+            if label_id and label_id != rule.get('label_id'):
+                RULE_MANAGER.update_rule(rule_id, label_id=label_id)
+
+            try:
+                success = gmail_client.apply_labels_to_message(
+                    message_id,
+                    [label_id] if label_id else [label_name],
+                )
+            except Exception as exc:
+                logger.warning('Failed to apply label %s to %s: %s', label_name, message_id, exc)
+                success = False
+
+            if success:
+                applied_any = True
+
+        if applied_any:
+            PROCESSED_STORE.mark_processed(message_id)
+            labeled_count += 1
+            _append_automation_log(
+                f"完成邮件「{subject or message_id}」的标签：{len(matches)} 条规则匹配"
+            )
+            if labeled_count >= batch_target:
+                break
+
+        if delay_seconds:
+            time.sleep(delay_seconds)
+
+    return labeled_count
+
+
+def _run_auto_label_pipeline(gmail_client: GmailClient, context: str = 'scheduled') -> None:
+    if not RULE_MANAGER.automation_enabled():
+        _append_automation_log(f"自动化（{context}）跳过：功能已关闭。", level='warning')
+        return
+    try:
+        labeled = _auto_label_recent_emails(gmail_client)
+        _update_automation_status(
+            last_run_at=datetime.now(timezone.utc).isoformat(),
+            last_labeled=labeled,
+            last_error=None,
+        )
+        _append_automation_log(f"自动化运行（{context}）完成，处理 {labeled} 封邮件。")
+    except Exception as exc:
+        logger.exception('Auto-label pipeline failed: %s', exc)
+        _update_automation_status(
+            last_run_at=datetime.now(timezone.utc).isoformat(),
+            last_error=str(exc),
+        )
+        _append_automation_log(f"自动化运行（{context}）失败：{exc}", level='error')
+
+
+def _trigger_automation_run(gmail_client: Optional[GmailClient], context: str) -> None:
+    if gmail_client is None or gmail_client.service is None:
+        _append_automation_log(f"自动化（{context}）跳过：Gmail 凭据不可用。", level='warning')
+        return
+    _run_auto_label_pipeline(gmail_client, context=context)
+
+
+def _run_background_cycle() -> None:
+    creds_json = load_persisted_credentials()
+    if not creds_json:
+        logger.debug('Skipping background refresh: no stored credentials yet')
+        return
+
+    creds = Credentials.from_authorized_user_info(creds_json)
+    gmail_client = GmailClient(creds=creds)
+    gcal_client = GCalClient(creds=creds)
+
+    try:
+        mailbox = gmail_client.fetch_mailbox_overview(active_folder='inbox', page=1, per_page=20, days=14)
+        _persist_recent_emails(mailbox, window_days=14)
+    except Exception as exc:
+        logger.warning('Background email refresh failed: %s', exc)
+
+    try:
+        events = gcal_client.list_events(max_results=500)
+        _persist_calendar(events, window_days=365)
+    except Exception as exc:
+        logger.warning('Background calendar refresh failed: %s', exc)
+
+    _update_automation_status(last_refresh_at=datetime.now(timezone.utc).isoformat())
+
+    if gmail_client.service is not None:
+        _run_auto_label_pipeline(gmail_client, context='background')
+
+
+async def _background_refresh_loop(stop_event: asyncio.Event) -> None:
+    interval_minutes = max(1, settings.BACKGROUND_REFRESH_INTERVAL_MINUTES)
+    while not stop_event.is_set():
+        try:
+            await asyncio.to_thread(_run_background_cycle)
+        except Exception as exc:
+            logger.exception('Background refresh loop iteration failed: %s', exc)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_minutes * 60)
+        except asyncio.TimeoutError:
+            continue
+
+
 app = FastAPI()
 
 app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+
+
+@app.on_event('startup')
+async def _startup_background_workers() -> None:
+    stop_event = asyncio.Event()
+    app.state.refresh_stop_event = stop_event
+    app.state.refresh_task = asyncio.create_task(_background_refresh_loop(stop_event))
+
+
+@app.on_event('shutdown')
+async def _shutdown_background_workers() -> None:
+    stop_event = getattr(app.state, 'refresh_stop_event', None)
+    task = getattr(app.state, 'refresh_task', None)
+    if stop_event:
+        stop_event.set()
+    if task:
+        await task
 
 # Serve frontend from project root (not src/)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # -> project root
@@ -194,6 +434,7 @@ async def get_user(request: Request):
 
     raise HTTPException(status_code=401, detail="User information not available.")
 
+
 def get_gmail_client(request: Request) -> GmailClient:
     creds_json = get_credentials(request)
     if not creds_json:
@@ -207,6 +448,81 @@ def get_gcal_client(request: Request) -> GCalClient:
         raise HTTPException(status_code=401, detail="Not authenticated")
     creds = Credentials.from_authorized_user_info(creds_json)
     return GCalClient(creds=creds)
+
+
+@app.get('/automation/status', response_model=Dict[str, Any])
+def get_automation_status(request: Request):
+    _require_credentials(request)
+    status = _automation_status_snapshot()
+    rules_state = RULE_MANAGER.get_state()
+    status.update({
+        'automation_enabled': rules_state['automation_enabled'],
+        'rule_count': len(rules_state['rules']),
+    })
+    return status
+
+
+@app.get('/automation/rules', response_model=Dict[str, Any])
+def list_automation_rules(request: Request):
+    _require_credentials(request)
+    return RULE_MANAGER.get_state()
+
+
+@app.post('/automation/rules', response_model=Dict[str, Any])
+def add_automation_rule(
+    payload: Dict[str, str],
+    request: Request,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+):
+    _require_credentials(request)
+    label = (payload.get('label') or '').strip()
+    reason = (payload.get('reason') or '').strip()
+    if not label or not reason:
+        raise HTTPException(status_code=400, detail='Both label and reason are required')
+
+    label_id = None
+    if gmail_client.service is not None:
+        try:
+            label_id = gmail_client.check_or_create_label(label)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f'Unable to ensure label: {exc}') from exc
+
+    rule = RULE_MANAGER.add_rule(label=label, reason=reason, label_id=label_id)
+    _append_automation_log(f"新增规则「{label}」：{reason}")
+    _trigger_automation_run(gmail_client, context='rule_added')
+    return rule
+
+
+@app.delete('/automation/rules/{rule_id}', response_model=Dict[str, bool])
+def delete_automation_rule(
+    rule_id: str,
+    request: Request,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+):
+    _require_credentials(request)
+    target = RULE_MANAGER.get_rule(rule_id)
+    removed = RULE_MANAGER.delete_rule(rule_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail='Rule not found')
+    label_name = target.get('label') if isinstance(target, dict) else rule_id
+    _append_automation_log(f"删除规则「{label_name or rule_id}」")
+    _trigger_automation_run(gmail_client, context='rule_deleted')
+    return {'success': True}
+
+
+@app.put('/automation/settings', response_model=Dict[str, Any])
+def update_automation_settings(
+    payload: Dict[str, Any],
+    request: Request,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+):
+    _require_credentials(request)
+    enabled = bool(payload.get('automation_enabled'))
+    state = RULE_MANAGER.set_automation_enabled(enabled)
+    _append_automation_log(f"自动化现已{'开启' if enabled else '关闭'}")
+    if enabled:
+        _trigger_automation_run(gmail_client, context='automation_enabled')
+    return state
 
 @app.get("/")
 def read_root():
@@ -232,6 +548,15 @@ def get_emails(
     )
     _persist_recent_emails(mailbox, window_days=14)
     return mailbox
+
+
+@app.get('/emails/cache', response_model=Dict[str, Any])
+def get_cached_emails(request: Request):
+    _require_credentials(request)
+    payload = _read_cached_payload(EMAIL_CACHE_PATH)
+    if payload is None:
+        raise HTTPException(status_code=404, detail='No cached emails available')
+    return payload
 
 @app.get("/emails/search", response_model=List[Dict[str, Any]])
 def search_emails(q: str, gmail_client: GmailClient = Depends(get_gmail_client)):
@@ -299,6 +624,15 @@ def get_calendar_events(
         _persist_calendar(events, window_days=365)
     return events
 
+
+@app.get('/calendar/cache', response_model=Dict[str, Any])
+def get_cached_calendar(request: Request):
+    _require_credentials(request)
+    payload = _read_cached_payload(CALENDAR_CACHE_PATH)
+    if payload is None:
+        raise HTTPException(status_code=404, detail='No cached calendar snapshot available')
+    return payload
+
 @app.post("/calendar/events", response_model=Dict[str, str])
 def create_calendar_event(proposal: Dict[str, Any], gcal_client: GCalClient = Depends(get_gcal_client)):
     event_id = gcal_client.create_event(proposal)
@@ -356,8 +690,8 @@ def summarize_email(message_id: str, gmail_client: GmailClient = Depends(get_gma
     if not content:
         raise HTTPException(status_code=404, detail="Email content not found")
 
-    # Call the OpenAI client directly
-    client = OpenAIClient()
+    # Call the shared OpenAI client directly
+    client = LLM_CLIENT
     try:
         result = client.summarize_email(
             email_body=content,

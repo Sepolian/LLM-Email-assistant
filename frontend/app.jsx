@@ -15,6 +15,56 @@ const ModernApp = ()=>{
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
 
+  const applyEmailCacheSnapshot = (snapshot) => {
+    if (!snapshot || !Array.isArray(snapshot.emails) || !snapshot.emails.length) {
+      return;
+    }
+    const pseudoMailbox = {
+      active_folder: 'inbox',
+      page: 1,
+      per_page: snapshot.emails.length,
+      days: snapshot.window_days || 14,
+      folders: {
+        inbox: {
+          label: 'INBOX',
+          page: 1,
+          has_next_page: false,
+          items: snapshot.emails,
+        },
+      },
+    };
+    setMailbox((prev) => prev || pseudoMailbox);
+  };
+
+  const applyCalendarCacheSnapshot = (snapshot) => {
+    if (!snapshot || !Array.isArray(snapshot.events) || !snapshot.events.length) {
+      return;
+    }
+    setCalendarEvents((prev) => (Array.isArray(prev) && prev.length ? prev : snapshot.events));
+  };
+
+  const hydrateFromSnapshots = async () => {
+    try {
+      const cacheResponse = await fetch('/emails/cache');
+      if (cacheResponse.ok) {
+        const snapshot = await cacheResponse.json();
+        applyEmailCacheSnapshot(snapshot);
+      }
+    } catch (err) {
+      console.warn('Emails cache hydration failed', err);
+    }
+
+    try {
+      const calendarResponse = await fetch('/calendar/cache');
+      if (calendarResponse.ok) {
+        const snapshot = await calendarResponse.json();
+        applyCalendarCacheSnapshot(snapshot);
+      }
+    } catch (err) {
+      console.warn('Calendar cache hydration failed', err);
+    }
+  };
+
   useEffect(() => {
     const handlePopState = () => setPage(window.location.pathname);
     window.addEventListener('popstate', handlePopState);
@@ -41,7 +91,9 @@ const ModernApp = ()=>{
       }
       const emailsData = await emailsResponse.json();
       setMailbox(emailsData);
-      if (emailsData?.active_folder && emailsData.active_folder !== activeFolder) {
+      const requestedFolder = folder || activeFolder;
+      const isCustomLabel = requestedFolder?.startsWith('label:');
+      if (!isCustomLabel && emailsData?.active_folder && emailsData.active_folder !== activeFolder) {
         setActiveFolder(emailsData.active_folder);
       }
       return emailsData;
@@ -87,6 +139,8 @@ const ModernApp = ()=>{
                 const userData = await userResponse.json();
                 setUser(userData);
                 setIsLoggedIn(true);
+
+          await hydrateFromSnapshots();
 
                 await fetchEmails({ folder: activeFolder, page: emailPage });
 

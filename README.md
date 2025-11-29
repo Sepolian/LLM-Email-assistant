@@ -32,5 +32,8 @@ The GUI lists recent emails (stubs by default), lets you summarize selected emai
 Notes
 - This scaffold contains skeleton modules for each integration. None of the integrations are production-ready yet — they contain TODOs and placeholders.
 - See `docs/project_structure.md` for architecture and next steps.
+- Automation knobs (optional) live in `.env`:
+	- `BACKGROUND_REFRESH_INTERVAL_MINUTES` (default `10`) controls how often the backend refreshes cached emails/events and runs the labeling pipeline.
+	- `AUTO_LABEL_ENABLED_DEFAULT` (default `false`) defines the initial state of the automation toggle before users change it in Settings.
 
 License: MIT (add your license file)

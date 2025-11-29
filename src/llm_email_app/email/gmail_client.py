@@ -49,6 +49,7 @@ class GmailClient:
     def __init__(self, creds: object = None):
         self.creds = creds
         self.service = None
+        self._label_cache: Dict[str, str] = {}
         if build is None:
             logger.info('googleapiclient not installed; GmailClient will return stubbed emails')
             return
@@ -72,11 +73,33 @@ class GmailClient:
             logger.exception('Failed to initialize Gmail service; falling back to stubs: %s', e)
             self.service = None
 
+    def _refresh_label_cache(self) -> Dict[str, str]:
+        """Fetch Gmail labels and memoize id->name lookups."""
+        if self.service is None:
+            return self._label_cache
+        try:
+            labels = self.service.users().labels().list(userId='me').execute().get('labels', [])
+            self._label_cache = {
+                label['id']: label.get('name', label['id'])
+                for label in labels
+                if label.get('id')
+            }
+        except HttpError as exc:
+            logger.warning('Unable to refresh Gmail label cache: %s', exc)
+        return self._label_cache
+
+    def _label_names_from_ids(self, label_ids: List[str]) -> List[str]:
+        if not label_ids:
+            return []
+        cache = self._label_cache or self._refresh_label_cache()
+        return [cache.get(label_id, label_id) for label_id in label_ids]
+
     def _parse_message(self, msg: dict) -> Dict[str, str]:
         """Parse a Gmail API message resource into a simple dict with id, from, subject, body."""
         headers = {h['name']: h.get('value') for h in msg.get('payload', {}).get('headers', [])}
         from_hdr = headers.get('From') or headers.get('From:') or ''
         subject = headers.get('Subject') or ''
+        snippet = msg.get('snippet', '')
 
         body = ''
         payload = msg.get('payload', {})
@@ -126,7 +149,17 @@ class GmailClient:
         except Exception:
             received = None
 
-        return {'id': msg.get('id'), 'from': from_hdr, 'subject': subject, 'body': body, 'received': received}
+        label_ids = msg.get('labelIds') or []
+        return {
+            'id': msg.get('id'),
+            'from': from_hdr,
+            'subject': subject,
+            'body': body,
+            'snippet': snippet,
+            'received': received,
+            'label_ids': label_ids,
+            'labels': self._label_names_from_ids(label_ids),
+        }
 
     def _generate_stub_emails(self, label_key: str, limit: int) -> List[Dict[str, Any]]:
         """Return deterministic stub data per mailbox for local development."""
@@ -172,11 +205,14 @@ class GmailClient:
             ],
         }
         data = fixtures.get(label_key, fixtures['inbox'])
+        stub_label = FOLDER_LABELS.get(label_key, label_key.upper())
         enriched: List[Dict[str, Any]] = []
         for idx, item in enumerate(data):
             enriched_item = dict(item)
             if 'received' not in enriched_item:
                 enriched_item['received'] = (now - timedelta(hours=idx * 3)).isoformat()
+            enriched_item.setdefault('labels', [stub_label])
+            enriched_item.setdefault('label_ids', [stub_label])
             enriched.append(enriched_item)
         return enriched[:limit]
 
@@ -519,12 +555,16 @@ class GmailClient:
             labels = self.service.users().labels().list(userId='me').execute().get('labels', [])
             for label in labels:
                 if label['name'] == label_name:
-                    return label['id']
+                    label_id = label['id']
+                    self._label_cache[label_id] = label_name
+                    return label_id
             
             # Create label if it doesn't exist
             label_body = {'name': label_name, 'labelListVisibility': 'labelShow', 'messageListVisibility': 'show'}
             label = self.service.users().labels().create(userId='me', body=label_body).execute()
-            return label['id']
+            label_id = label['id']
+            self._label_cache[label_id] = label_name
+            return label_id
         except HttpError as e:
             logger.exception('Failed to check or create label: %s', e)
             raise
