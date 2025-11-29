@@ -59,13 +59,20 @@ class OpenAIClient:
         This avoids hard-coding model names or provider URLs in code; they should be provided
         by environment variables at deploy time.
         """
-        self.api_key = api_key or settings.OPENAI_API_KEY
-        self.model = model or os.getenv("OPENAI_MODEL")
-        # allow alternative env var names for base URL
-        self.api_base = api_base or os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_API_URL")
+        raw_api_key = api_key if api_key is not None else settings.OPENAI_API_KEY
+        self.api_key = (raw_api_key or '').strip() or None
 
-        # prefer explicit base URL: if set, use requests to call an OpenAI-compatible endpoint
-        self._use_requests = bool(self.api_base)
+        raw_model = model if model is not None else os.getenv("OPENAI_MODEL")
+        self.model = (raw_model or '').strip() or None
+
+        # allow alternative env var names for base URL
+        raw_base = (
+            api_base if api_base is not None else os.getenv("OPENAI_API_BASE") or os.getenv("OPENAI_API_URL")
+        )
+        self.api_base = (raw_base or '').strip() or None
+
+        # prefer explicit base URL: only use requests path when base, model, and key are all configured
+        self._use_requests = bool(self.api_base and self.api_key and self.model)
         self._client = None
 
         if not self._use_requests and self.api_key:
@@ -343,15 +350,27 @@ class OpenAIClient:
             {'role': 'user', 'content': user_prompt},
         ]
 
-        text, _ = self._chat_completion(
-            messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            context_tag='label_rules',
-        )
+        try:
+            text, _ = self._chat_completion(
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                context_tag='label_rules',
+            )
+        except Exception as exc:
+            raise RuntimeError(f'LLM label evaluation request failed: {exc}') from exc
 
-        parsed = _extract_json(text)
-        if isinstance(parsed, dict) and 'matches' in parsed:
-            return parsed
-        return {'matches': []}
+        parsed = _extract_json(text) if isinstance(text, str) else None
+        if not isinstance(parsed, dict):
+            snippet = (text or '') if isinstance(text, str) else repr(text)
+            logger.error('LLM label evaluation returned non-JSON payload: %s', snippet[:500])
+            raise RuntimeError('LLM label evaluation returned a non-JSON payload.')
+
+        matches = parsed.get('matches')
+        if not isinstance(matches, list):
+            snippet = json.dumps(parsed, ensure_ascii=False)[:500]
+            logger.error('LLM label evaluation response missing "matches" list. Payload: %s', snippet)
+            raise RuntimeError('LLM label evaluation response missing "matches" list.')
+
+        return parsed
     

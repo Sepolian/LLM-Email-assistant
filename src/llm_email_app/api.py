@@ -40,6 +40,7 @@ RULE_MANAGER = RuleManager(settings.AUTO_LABEL_RULES_PATH, settings.AUTO_LABEL_E
 PROCESSED_STORE = ProcessedEmailStore(settings.AUTO_LABEL_PROCESSED_PATH)
 AUTOMATION_STATUS_LOCK = Lock()
 AUTOMATION_LOG_MAX = 50
+EMAIL_CACHE_MAX_AGE = timedelta(minutes=90)
 AUTOMATION_STATUS: Dict[str, Any] = {
     'last_run_at': None,
     'last_error': None,
@@ -83,6 +84,36 @@ def _read_cached_payload(path: Path) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.warning('Unable to read cached payload at %s: %s', path, exc)
         return None
+
+
+def _load_cached_recent_emails(lookback_days: int, limit: int) -> List[Dict[str, Any]]:
+    snapshot = _read_cached_payload(EMAIL_CACHE_PATH)
+    if not snapshot:
+        return []
+
+    generated_at = _coerce_datetime(snapshot.get('generated_at'))
+    if not generated_at:
+        return []
+    if datetime.now(timezone.utc) - generated_at > EMAIL_CACHE_MAX_AGE:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=max(1, lookback_days))
+    ordered: List[Tuple[Optional[datetime], Dict[str, Any]]] = []
+    for item in snapshot.get('emails', []):
+        received_dt = _coerce_datetime(item.get('received'))
+        if received_dt and received_dt < cutoff:
+            continue
+        ordered.append((received_dt, dict(item)))
+
+    if not ordered:
+        return []
+
+    ordered.sort(
+        key=lambda pair: pair[0] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    sliced = [item for _, item in ordered[:max(1, limit)]]
+    return sliced
 
 
 def _persist_recent_emails(mailbox: Dict[str, Any], window_days: int = 14) -> None:
@@ -188,6 +219,12 @@ def _append_automation_log(message: str, level: str = 'info') -> None:
             del logs[:-AUTOMATION_LOG_MAX]
 
 
+def _reset_processed_email_cache(reason: str) -> None:
+    """Clear processed-email markers so new/updated rules can reprocess existing threads."""
+    PROCESSED_STORE.reset()
+    _append_automation_log(f"{reason}：已清空已处理邮件缓存")
+
+
 def _require_credentials(request: Request) -> Dict[str, Any]:
     creds_json = get_credentials(request)
     if not creds_json:
@@ -204,8 +241,20 @@ def _auto_label_recent_emails(gmail_client: GmailClient) -> int:
     lookback_days = max(1, settings.AUTO_LABEL_LOOKBACK_DAYS)
     batch_target = max(1, settings.AUTO_LABEL_MAX_PER_CYCLE)
     delay_seconds = max(0.0, settings.AUTO_LABEL_REQUEST_INTERVAL_SECONDS)
-    # fetch extra to account for already-processed entries
-    candidates = gmail_client.fetch_emails_since(days=lookback_days, max_results=batch_target * 3)
+    candidate_limit = batch_target * 3
+
+    # Prefer cache snapshot to avoid extra Gmail API usage
+    candidates = _load_cached_recent_emails(lookback_days, candidate_limit)
+    used_cache = bool(candidates)
+    if used_cache:
+        _append_automation_log(f"自动化使用本地缓存，共 {len(candidates)} 封候选邮件。")
+    else:
+        # fetch extra to account for already-processed entries
+        candidates = gmail_client.fetch_emails_since(days=lookback_days, max_results=candidate_limit)
+
+    if not candidates:
+        _append_automation_log('自动化跳过：没有可用的缓存邮件，也无法从远程获取。', level='warning')
+        return 0
 
     labeled_count = 0
     for email_payload in candidates:
@@ -213,13 +262,20 @@ def _auto_label_recent_emails(gmail_client: GmailClient) -> int:
         if not message_id or PROCESSED_STORE.is_processed(message_id):
             continue
 
-        detail = gmail_client.get_message(message_id) or email_payload
+        detail = email_payload
+        if not (detail.get('body') or detail.get('html')):
+            detail = gmail_client.get_message(message_id) or email_payload
         body = detail.get('html') or detail.get('body') or detail.get('snippet') or ''
         subject = detail.get('subject') or email_payload.get('subject') or ''
         sender = detail.get('from') or email_payload.get('from') or ''
+        snippet = detail.get('snippet') or email_payload.get('snippet') or ''
 
         if not body and not subject:
             continue
+
+        display_name = (subject or snippet or sender or message_id or '')[:80]
+        if display_name:
+            _append_automation_log(f"开始处理邮件「{display_name}」")
 
         try:
             evaluation = LLM_CLIENT.evaluate_label_rules(
@@ -468,6 +524,17 @@ def list_automation_rules(request: Request):
     return RULE_MANAGER.get_state()
 
 
+@app.post('/automation/run', response_model=Dict[str, Any])
+def run_automation_now(
+    request: Request,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+):
+    _require_credentials(request)
+    _append_automation_log('用户手动触发自动化')
+    _trigger_automation_run(gmail_client, context='manual')
+    return _automation_status_snapshot()
+
+
 @app.post('/automation/rules', response_model=Dict[str, Any])
 def add_automation_rule(
     payload: Dict[str, str],
@@ -489,6 +556,7 @@ def add_automation_rule(
 
     rule = RULE_MANAGER.add_rule(label=label, reason=reason, label_id=label_id)
     _append_automation_log(f"新增规则「{label}」：{reason}")
+    _reset_processed_email_cache('新增规则')
     _trigger_automation_run(gmail_client, context='rule_added')
     return rule
 
@@ -506,6 +574,7 @@ def delete_automation_rule(
         raise HTTPException(status_code=404, detail='Rule not found')
     label_name = target.get('label') if isinstance(target, dict) else rule_id
     _append_automation_log(f"删除规则「{label_name or rule_id}」")
+    _reset_processed_email_cache('删除规则')
     _trigger_automation_run(gmail_client, context='rule_deleted')
     return {'success': True}
 
@@ -518,9 +587,12 @@ def update_automation_settings(
 ):
     _require_credentials(request)
     enabled = bool(payload.get('automation_enabled'))
+    was_enabled = RULE_MANAGER.automation_enabled()
     state = RULE_MANAGER.set_automation_enabled(enabled)
     _append_automation_log(f"自动化现已{'开启' if enabled else '关闭'}")
     if enabled:
+        if not was_enabled:
+            _reset_processed_email_cache('自动化开启')
         _trigger_automation_run(gmail_client, context='automation_enabled')
     return state
 

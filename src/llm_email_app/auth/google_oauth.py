@@ -3,7 +3,7 @@
 This module should handle OAuth flows to obtain credentials for Gmail and Google Calendar.
 Use `google-auth-oauthlib` helpers for web or local flows.
 """
-from typing import Any
+from typing import Any, Optional
 from pathlib import Path
 import logging
 
@@ -34,7 +34,7 @@ DEFAULT_SCOPES = [
 ]
 
 
-def get_web_flow(scopes: list = None) -> Any:
+def get_web_flow(scopes: list = None, state: Optional[str] = None) -> Any:
     """Create a Google OAuth Flow for a web application."""
     if Flow is None:
         raise ImportError("google-auth-oauthlib is required for Google OAuth flow")
@@ -59,5 +59,10 @@ def get_web_flow(scopes: list = None) -> Any:
     if scopes is None:
         scopes = DEFAULT_SCOPES
 
-    flow = Flow.from_client_config(client_config, scopes=scopes, redirect_uri=redirect_uri)
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=scopes,
+        redirect_uri=redirect_uri,
+        state=state,
+    )
     return flow

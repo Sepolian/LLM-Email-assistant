@@ -227,6 +227,25 @@ const ModernApp = ()=>{
     }
   };
 
+  const handleAutomationActivity = async ({ resetPage = true } = {}) => {
+    setEmailCache({});
+    setPrefetchQueue([]);
+    setSelectedEmail(null);
+
+    if (!isLoggedIn) {
+      return;
+    }
+
+    const targetPage = resetPage ? 1 : emailPage;
+
+    if (resetPage && emailPage !== 1) {
+      setEmailPage(1);
+      return;
+    }
+
+    await fetchEmails({ folder: activeFolder, page: targetPage, force: true });
+  };
+
   useEffect(() => {
     const initialize = async () => {
         setLoading(true);
@@ -382,7 +401,7 @@ const ModernApp = ()=>{
           onResetMonth={handleCalendarToday}
         />
       );
-      case 'settings': return <SettingsView user={user} />;
+      case 'settings': return <SettingsView user={user} onAutomationActivity={handleAutomationActivity} />;
       default: return <HomeView />;
     }
   }

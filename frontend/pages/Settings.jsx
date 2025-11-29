@@ -1,6 +1,6 @@
 const { useState, useEffect } = React;
 
-const SettingsView = ({ user }) => {
+const SettingsView = ({ user, onAutomationActivity }) => {
   const [automationEnabled, setAutomationEnabled] = useState(false);
   const [rules, setRules] = useState([]);
   const [status, setStatus] = useState(null);
@@ -8,6 +8,7 @@ const SettingsView = ({ user }) => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
+  const [runningNow, setRunningNow] = useState(false);
 
   const loadAutomationState = async () => {
     try {
@@ -42,6 +43,17 @@ const SettingsView = ({ user }) => {
     loadAutomationState();
   }, []);
 
+  const notifyAutomationActivity = async () => {
+    if (typeof onAutomationActivity !== 'function') {
+      return;
+    }
+    try {
+      await onAutomationActivity({ resetPage: true });
+    } catch (err) {
+      console.warn('Automation refresh failed', err);
+    }
+  };
+
   const toggleAutomation = async () => {
     const nextValue = !automationEnabled;
     setAutomationEnabled(nextValue);
@@ -55,6 +67,7 @@ const SettingsView = ({ user }) => {
         throw new Error('服务端更新失败');
       }
       await loadAutomationState();
+      await notifyAutomationActivity();
     } catch (err) {
       setAutomationEnabled(!nextValue);
       setError(err.message || '更新自动化开关失败');
@@ -82,6 +95,7 @@ const SettingsView = ({ user }) => {
       setForm({ label: '', reason: '' });
       setError(null);
       await loadAutomationState();
+      await notifyAutomationActivity();
     } catch (err) {
       setError(err.message || '创建规则失败');
     } finally {
@@ -97,6 +111,7 @@ const SettingsView = ({ user }) => {
         throw new Error('删除失败');
       }
       await loadAutomationState();
+      await notifyAutomationActivity();
     } catch (err) {
       setError(err.message || '删除规则失败');
     }
@@ -114,6 +129,24 @@ const SettingsView = ({ user }) => {
   };
 
   const logs = status?.logs || [];
+
+  const handleRunAutomation = async () => {
+    setRunningNow(true);
+    try {
+      const resp = await fetch('/automation/run', { method: 'POST' });
+      if (!resp.ok) {
+        throw new Error('手动运行失败');
+      }
+      await resp.json();
+      await loadAutomationState();
+      setError(null);
+      await notifyAutomationActivity();
+    } catch (err) {
+      setError(err.message || '手动运行失败');
+    } finally {
+      setRunningNow(false);
+    }
+  };
 
   return (
     <div style={{ background: '#fff', borderRadius: 12, overflow: 'hidden' }}>
@@ -137,26 +170,43 @@ const SettingsView = ({ user }) => {
         </section>
 
         <section style={{ borderTop: '1px solid #f1f5f9', paddingTop: 16 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             <div>
               <h3 style={{ margin: '0 0 4px 0' }}>自动标签</h3>
               <p style={{ color: '#6b7280', margin: 0 }}>根据自定义规则定期为邮件添加标签</p>
             </div>
-            <button
-              onClick={toggleAutomation}
-              disabled={loading}
-              style={{
-                padding: '8px 16px',
-                borderRadius: 999,
-                border: 'none',
-                background: automationEnabled ? '#22c55e' : '#cbd5f5',
-                color: automationEnabled ? '#fff' : '#0f172a',
-                cursor: loading ? 'not-allowed' : 'pointer',
-                minWidth: 120,
-              }}
-            >
-              {automationEnabled ? '已开启' : '已关闭'}
-            </button>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                onClick={toggleAutomation}
+                disabled={loading}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 999,
+                  border: 'none',
+                  background: automationEnabled ? '#22c55e' : '#cbd5f5',
+                  color: automationEnabled ? '#fff' : '#0f172a',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  minWidth: 120,
+                }}
+              >
+                {automationEnabled ? '已开启' : '已关闭'}
+              </button>
+              <button
+                onClick={handleRunAutomation}
+                disabled={loading || runningNow}
+                style={{
+                  padding: '8px 16px',
+                  borderRadius: 999,
+                  border: '1px solid #cbd5f5',
+                  background: runningNow ? '#e0e7ff' : '#fff',
+                  color: '#0f172a',
+                  cursor: loading || runningNow ? 'not-allowed' : 'pointer',
+                  minWidth: 120,
+                }}
+              >
+                {runningNow ? '运行中…' : '立即运行'}
+              </button>
+            </div>
           </div>
           <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
             <StatusCard label="最近运行" value={formatTimestamp(status?.last_run_at)} />
@@ -176,7 +226,8 @@ const SettingsView = ({ user }) => {
                     key={log.id}
                     style={{
                       display: 'flex',
-                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: 8,
                       alignItems: 'center',
                       padding: '6px 10px',
                       borderRadius: 8,
@@ -185,8 +236,8 @@ const SettingsView = ({ user }) => {
                       fontSize: 13,
                     }}
                   >
-                    <span style={{ color: '#0f172a' }}>{log.message}</span>
-                    <span style={{ color: '#94a3b8', marginLeft: 12 }}>{formatTimestamp(log.timestamp)}</span>
+                    <span style={{ color: '#0f172a', flex: '1 1 200px' }}>{log.message}</span>
+                    <span style={{ color: '#94a3b8', fontSize: 12 }}>{formatTimestamp(log.timestamp)}</span>
                   </div>
                 ))}
               </div>
