@@ -1,6 +1,6 @@
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
-from llm_email_app.auth.google_oauth import get_web_flow, TOKEN_DIR
+from llm_email_app.auth.google_oauth import get_web_flow, TOKEN_DIR, DEFAULT_SCOPES
 import json
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -9,10 +9,7 @@ SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/calendar",
-]
+] + DEFAULT_SCOPES
 
 
 async def login(request: Request):

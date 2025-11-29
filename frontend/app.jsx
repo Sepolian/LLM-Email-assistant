@@ -2,9 +2,13 @@ const { useState, useEffect } = React;
 
 const ModernApp = ()=>{
   const [page, setPage] = useState(window.location.pathname);
-  const [emails, setEmails] = useState(null);
+  const [mailbox, setMailbox] = useState(null);
   const [emailPage, setEmailPage] = useState(1);
-  const [events, setEvents] = useState(null);
+  const [activeFolder, setActiveFolder] = useState('inbox');
+  const [calendarEvents, setCalendarEvents] = useState([]);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [calendarError, setCalendarError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedEmail, setSelectedEmail] = useState(null);
@@ -17,13 +21,60 @@ const ModernApp = ()=>{
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  const fetchEmails = async (page = 1) => {
+  const formatMonthParam = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    return `${year}-${month}`;
+  };
+
+  const fetchEmails = async ({ folder = activeFolder, page = emailPage } = {}) => {
     try {
-      const emailsResponse = await fetch(`/emails?page=${page}&per_page=20&days=7`);
+      const params = new URLSearchParams({
+        folder,
+        page: String(page),
+        per_page: '20',
+        days: '14'
+      });
+      const emailsResponse = await fetch(`/emails?${params.toString()}`);
+      if (!emailsResponse.ok) {
+        throw new Error('Email request failed');
+      }
       const emailsData = await emailsResponse.json();
-      setEmails(emailsData);
+      setMailbox(emailsData);
+      if (emailsData?.active_folder && emailsData.active_folder !== activeFolder) {
+        setActiveFolder(emailsData.active_folder);
+      }
+      return emailsData;
     } catch (err) {
       setError("Failed to fetch emails.");
+      return null;
+    }
+  };
+
+  const fetchCalendarEvents = async (targetMonth = calendarMonth) => {
+    if (!targetMonth) {
+      return null;
+    }
+
+    setCalendarLoading(true);
+    setCalendarError(null);
+    try {
+      const params = new URLSearchParams({
+        month: formatMonthParam(targetMonth),
+        max_results: '200'
+      });
+      const response = await fetch(`/calendar/events?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error('Calendar request failed');
+      }
+      const data = await response.json();
+      setCalendarEvents(Array.isArray(data) ? data : []);
+      return data;
+    } catch (err) {
+      setCalendarError('Failed to fetch calendar events.');
+      return null;
+    } finally {
+      setCalendarLoading(false);
     }
   };
 
@@ -37,14 +88,7 @@ const ModernApp = ()=>{
                 setUser(userData);
                 setIsLoggedIn(true);
 
-                const [_, eventsResponse] = await Promise.all([
-                    fetchEmails(emailPage),
-                    fetch('/calendar/events')
-                ]);
-
-                const eventsData = await eventsResponse.json();
-                
-                setEvents(eventsData);
+                await fetchEmails({ folder: activeFolder, page: emailPage });
 
             } else {
                 setIsLoggedIn(false);
@@ -63,14 +107,40 @@ const ModernApp = ()=>{
 
   useEffect(() => {
     if(isLoggedIn) {
-      fetchEmails(emailPage);
+      fetchEmails({ folder: activeFolder, page: emailPage });
     }
-  }, [emailPage, isLoggedIn]);
+  }, [emailPage, activeFolder, isLoggedIn]);
+
+  useEffect(() => {
+    if (isLoggedIn) {
+      fetchCalendarEvents(calendarMonth);
+    }
+  }, [calendarMonth, isLoggedIn]);
   
   const handleEmailPageChange = (newPage) => {
-    if (newPage > 0) {
+    if (newPage > 0 && newPage !== emailPage) {
       setEmailPage(newPage);
     }
+  };
+
+  const handleFolderChange = (folderKey) => {
+    if (folderKey !== activeFolder) {
+      setActiveFolder(folderKey);
+      setEmailPage(1);
+      setSelectedEmail(null);
+    }
+  };
+
+  const handleCalendarMonthChange = (direction) => {
+    setCalendarMonth(prev => {
+      const base = prev ? new Date(prev) : new Date();
+      const next = new Date(base.getFullYear(), base.getMonth() + direction, 1);
+      return next;
+    });
+  };
+
+  const handleCalendarToday = () => {
+    setCalendarMonth(new Date());
   };
 
   const navigate = (path) => {
@@ -84,8 +154,11 @@ const ModernApp = ()=>{
     await fetch('/logout');
     setIsLoggedIn(false);
     setUser(null);
-    setEmails(null);
-    setEvents(null);
+    setMailbox(null);
+    setCalendarEvents([]);
+    setCalendarError(null);
+    setCalendarMonth(new Date());
+    setCalendarLoading(false);
     setError("You have been logged out.");
     navigate('/');
   }
@@ -94,7 +167,7 @@ const ModernApp = ()=>{
     try {
       const response = await fetch(`/emails/${emailId}`, { method: 'DELETE' });
       if (response.ok) {
-        setEmails(emails.filter(email => email.id !== emailId));
+        fetchEmails({ folder: activeFolder, page: emailPage });
       } else {
         const errorData = await response.json();
         setError(errorData.detail || "Failed to delete email.");
@@ -132,8 +205,30 @@ const ModernApp = ()=>{
 
     switch(activeTab){
       case 'home': return <HomeView />;
-      case 'email': return <EmailView emails={emails} loading={loading} error={error} onDeleteEmail={handleDeleteEmail} selectedEmail={selectedEmail} onSelectEmail={setSelectedEmail} page={emailPage} onPageChange={handleEmailPageChange} />;
-      case 'calendar': return <CalendarView events={events} loading={loading} error={error} />;
+      case 'email': return (
+        <EmailView 
+          mailbox={mailbox} 
+          loading={loading} 
+          error={error} 
+          onDeleteEmail={handleDeleteEmail} 
+          selectedEmail={selectedEmail} 
+          onSelectEmail={setSelectedEmail} 
+          page={emailPage} 
+          onPageChange={handleEmailPageChange}
+          activeFolder={activeFolder}
+          onFolderChange={handleFolderChange}
+        />
+      );
+      case 'calendar': return (
+        <CalendarView 
+          events={calendarEvents} 
+          loading={calendarLoading} 
+          error={calendarError || error} 
+          currentMonth={calendarMonth}
+          onMonthChange={handleCalendarMonthChange}
+          onResetMonth={handleCalendarToday}
+        />
+      );
       case 'settings': return <SettingsView user={user} />;
       default: return <HomeView />;
     }

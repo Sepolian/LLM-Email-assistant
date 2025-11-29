@@ -1,14 +1,16 @@
 # LLM API
-OPENAI_API_KEY=sk-your-api-key
-OPENAI_API_BASE=http://your-api-base
-OPENAI_MODEL=model-name
+OPENAI_API_KEY="sk-your-api-key"
+OPENAI_API_BASE="http://your-api-base"
+OPENAI_MODEL="model-name"
 
 # Google OAuth (Gmail + Google Calendar)
-GOOGLE_CLIENT_ID=your-client-id
-GOOGLE_CLIENT_SECRET=your-client-secret
-GOOGLE_OAUTH_REDIRECT_URI=http://localhost:8000/auth/callback      # Make sure this matches the URI in your Google Cloud Console
+GOOGLE_CLIENT_ID="your-client-id"
+GOOGLE_CLIENT_SECRET="your-client-secret"
+# Make sure this matches the URI in your Google Cloud Console
+GOOGLE_OAUTH_REDIRECT_URI="http://localhost:8000/auth/callback"
 
 # App settings
 SECRET_KEY=your-super-secret-key
+BACKEND_PORT=8000
 MAX_TOKEN=5120
 DRY_RUN=false
