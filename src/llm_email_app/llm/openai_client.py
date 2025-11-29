@@ -268,4 +268,90 @@ class OpenAIClient:
         except Exception as e:
             # On API error, raise to let caller decide; include message for debugging
             raise RuntimeError(f"OpenAI-format API call failed: {e}")
+
+    def evaluate_label_rules(
+        self,
+        email_body: str,
+        subject: str,
+        sender: str,
+        rules: List[Dict[str, Any]],
+        temperature: float = 0.0,
+        max_tokens: int = 512,
+    ) -> Dict[str, Any]:
+        """Evaluate auto-label rules using LLM (or heuristics when LLM unavailable).
+
+        Returns a dict like {"matches": [{"rule_id": str, "confidence": float, "explanation": str}]}
+        """
+
+        if not rules:
+            return {"matches": []}
+
+        if max_tokens is None:
+            max_tokens = min(settings.MAX_TOKEN, 512)
+
+        corpus = "\n".join(filter(None, [subject or "", sender or "", email_body or ""])).lower()
+        if not self._is_ready():
+            matches: List[Dict[str, Any]] = []
+            for rule in rules:
+                rule_id = rule.get('id') or rule.get('rule_id')
+                label = (rule.get('label') or '').strip()
+                reason = (rule.get('reason') or '').strip()
+                if not rule_id or not (label or reason):
+                    continue
+                heuristics = [label.lower()] if label else []
+                heuristics += [token.lower() for token in reason.split() if len(token) > 3]
+                if any(token and token in corpus for token in heuristics):
+                    matches.append({
+                        'rule_id': rule_id,
+                        'confidence': 0.55,
+                        'explanation': 'Matched via offline keyword heuristic when LLM unavailable.'
+                    })
+            return {'matches': matches}
+
+        payload = {
+            'email': {
+                'subject': subject or '',
+                'sender': sender or '',
+                'body': email_body or '',
+            },
+            'rules': [
+                {
+                    'id': rule.get('id') or rule.get('rule_id'),
+                    'label': rule.get('label', ''),
+                    'reason': rule.get('reason', ''),
+                }
+                for rule in rules
+                if rule.get('id') or rule.get('rule_id')
+            ],
+        }
+
+        system_prompt = (
+            'You are an email triage assistant. '
+            'Given a single email and a list of labeling rules, return JSON only with matches. '
+            'Each match references the rule id and includes a short explanation plus confidence (0-1). '
+            'Only match a rule when the email clearly satisfies the described condition.'
+        )
+
+        user_prompt = (
+            "Email and rules (JSON):\n" +
+            json.dumps(payload, ensure_ascii=False, indent=2) +
+            "\nRespond strictly with JSON shaped as {\"matches\": [{\"rule_id\": \"<id>\", \"confidence\": 0-1, \"explanation\": \"text\"}]}"
+        )
+
+        messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt},
+        ]
+
+        text, _ = self._chat_completion(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            context_tag='label_rules',
+        )
+
+        parsed = _extract_json(text)
+        if isinstance(parsed, dict) and 'matches' in parsed:
+            return parsed
+        return {'matches': []}
     
