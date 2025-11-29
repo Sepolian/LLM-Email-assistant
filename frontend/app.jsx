@@ -14,6 +14,12 @@ const ModernApp = ()=>{
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
+  
+  // Cache and Prefetch State
+  const [emailCache, setEmailCache] = useState({});
+  const [prefetchQueue, setPrefetchQueue] = useState([]);
+  const [isPrefetching, setIsPrefetching] = useState(false);
+  const [isFetchingEmails, setIsFetchingEmails] = useState(false);
 
   useEffect(() => {
     const handlePopState = () => setPage(window.location.pathname);
@@ -27,7 +33,20 @@ const ModernApp = ()=>{
     return `${year}-${month}`;
   };
 
-  const fetchEmails = async ({ folder = activeFolder, page = emailPage } = {}) => {
+  const fetchEmails = async ({ folder = activeFolder, page = emailPage, background = false, force = false } = {}) => {
+    if (!background) setIsFetchingEmails(true);
+
+    // Check cache if not forced
+    if (!force && !background && emailCache[folder]?.[page]) {
+      const cachedData = emailCache[folder][page];
+      setMailbox(cachedData);
+      if (cachedData?.active_folder && cachedData.active_folder !== activeFolder) {
+        setActiveFolder(cachedData.active_folder);
+      }
+      if (!background) setIsFetchingEmails(false);
+      return cachedData;
+    }
+
     try {
       const params = new URLSearchParams({
         folder,
@@ -40,14 +59,28 @@ const ModernApp = ()=>{
         throw new Error('Email request failed');
       }
       const emailsData = await emailsResponse.json();
-      setMailbox(emailsData);
-      if (emailsData?.active_folder && emailsData.active_folder !== activeFolder) {
-        setActiveFolder(emailsData.active_folder);
+      
+      // Update cache
+      setEmailCache(prev => ({
+        ...prev,
+        [folder]: {
+          ...(prev[folder] || {}),
+          [page]: emailsData
+        }
+      }));
+
+      if (!background) {
+        setMailbox(emailsData);
+        if (emailsData?.active_folder && emailsData.active_folder !== activeFolder) {
+          setActiveFolder(emailsData.active_folder);
+        }
       }
       return emailsData;
     } catch (err) {
-      setError("Failed to fetch emails.");
+      if (!background) setError("Failed to fetch emails.");
       return null;
+    } finally {
+      if (!background) setIsFetchingEmails(false);
     }
   };
 
@@ -75,6 +108,68 @@ const ModernApp = ()=>{
       return null;
     } finally {
       setCalendarLoading(false);
+    }
+  };
+
+  // Queue management effect
+  useEffect(() => {
+    if (!isLoggedIn) return;
+    
+    const pagesToPrefetch = [];
+    // Prefetch next 5 pages
+    for (let i = 1; i <= 5; i++) {
+      const targetPage = emailPage + i;
+      // Check if already cached
+      if (!emailCache[activeFolder]?.[targetPage]) {
+        pagesToPrefetch.push({ folder: activeFolder, page: targetPage });
+      }
+    }
+
+    if (pagesToPrefetch.length > 0) {
+      setPrefetchQueue(prev => {
+        // Filter out items already in queue to avoid duplicates
+        const newItems = pagesToPrefetch.filter(item => 
+          !prev.some(p => p.folder === item.folder && p.page === item.page)
+        );
+        return [...prev, ...newItems];
+      });
+    }
+  }, [emailPage, activeFolder, isLoggedIn, emailCache]);
+
+  // Queue processing effect
+  useEffect(() => {
+    if (prefetchQueue.length === 0 || isPrefetching || !isLoggedIn) return;
+
+    const processQueue = async () => {
+      setIsPrefetching(true);
+      const item = prefetchQueue[0];
+      
+      // Double check cache before fetching
+      if (!emailCache[item.folder]?.[item.page]) {
+        await fetchEmails({ folder: item.folder, page: item.page, background: true });
+      }
+      
+      setPrefetchQueue(prev => prev.slice(1));
+      setIsPrefetching(false);
+    };
+
+    processQueue();
+  }, [prefetchQueue, isPrefetching, isLoggedIn, emailCache]);
+
+  const handleRefresh = () => {
+    // Clear cache for current folder
+    setEmailCache(prev => {
+      const newCache = { ...prev };
+      delete newCache[activeFolder];
+      return newCache;
+    });
+    // Clear queue for current folder
+    setPrefetchQueue(prev => prev.filter(p => p.folder !== activeFolder));
+    
+    if (emailPage === 1) {
+        fetchEmails({ folder: activeFolder, page: 1, force: true });
+    } else {
+        setEmailPage(1);
     }
   };
 
@@ -209,6 +304,7 @@ const ModernApp = ()=>{
         <EmailView 
           mailbox={mailbox} 
           loading={loading} 
+          fetching={isFetchingEmails}
           error={error} 
           onDeleteEmail={handleDeleteEmail} 
           selectedEmail={selectedEmail} 
@@ -217,6 +313,7 @@ const ModernApp = ()=>{
           onPageChange={handleEmailPageChange}
           activeFolder={activeFolder}
           onFolderChange={handleFolderChange}
+          onRefresh={handleRefresh}
         />
       );
       case 'calendar': return (

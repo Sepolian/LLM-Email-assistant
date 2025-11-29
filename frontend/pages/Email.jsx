@@ -12,6 +12,19 @@ const FOLDER_DISPLAY = [
   { key: 'trash', label: '回收站' },
 ];
 
+const Spinner = () => (
+  <div style={{
+      width: '16px',
+      height: '16px',
+      border: '2px solid #ffffff',
+      borderTop: '2px solid transparent',
+      borderRadius: '50%',
+      animation: 'spin 1s linear infinite'
+  }}>
+      <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+  </div>
+);
+
 const EmailDetailView = ({ email, onBack }) => {
   const { useMemo } = React;
   const domPurify = typeof window === "undefined" ? null : window.DOMPurify;
@@ -96,7 +109,7 @@ const EmailDetailView = ({ email, onBack }) => {
   );
 };
 
-function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSelectEmail, page, onPageChange, activeFolder, onFolderChange }) {
+function EmailView({ mailbox, loading, fetching, error, onDeleteEmail, selectedEmail, onSelectEmail, page, onPageChange, activeFolder, onFolderChange, onRefresh }) {
   const folderData = mailbox?.folders?.[activeFolder] || { items: [], page, has_next_page: false };
   const emails = folderData.items || [];
   const perPage = mailbox?.per_page || 20;
@@ -149,8 +162,28 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
       {/* Left-hand column */}
       <div style={{ display: 'flex', flexDirection: 'column', width: 320, maxHeight: '70vh' }}>
         
+        {/* Folder Header & Refresh */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', borderBottom: '1px solid #eee' }}>
+           <div style={{ fontWeight: 'bold', textTransform: 'capitalize' }}>
+             {FOLDER_DISPLAY.find(f => f.key === activeFolder)?.label || activeFolder}
+           </div>
+           <button 
+             onClick={onRefresh}
+             style={{
+               padding: '4px 8px',
+               fontSize: '12px',
+               cursor: 'pointer',
+               background: '#fff',
+               border: '1px solid #ccc',
+               borderRadius: '4px'
+             }}
+           >
+             Refresh
+           </button>
+        </div>
+
         {/* Email list */}
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <div style={{ flex: 1, overflowY: 'auto', opacity: fetching ? 0.6 : 1, transition: 'opacity 0.2s' }}>
           {loading ? (
             <p>Loading...</p>
           ) : isEmpty ? (
@@ -227,6 +260,9 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
                 onClick={handleSummarize}
                 disabled={summarizing}
                 style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
                   padding: "8px 12px",
                   background: "#1f6feb",
                   color: "#fff",
@@ -235,6 +271,7 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
                   cursor: "pointer"
                 }}
               >
+                {summarizing && <Spinner />}
                 {summarizing ? "Summarizing..." : "Summarize"}
               </button>
 
