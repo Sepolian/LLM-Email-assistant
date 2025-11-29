@@ -14,6 +14,10 @@ const ModernApp = ()=>{
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
+  const [emailCache, setEmailCache] = useState({});
+  const [prefetchQueue, setPrefetchQueue] = useState([]);
+  const [isPrefetching, setIsPrefetching] = useState(false);
+  const [isFetchingEmails, setIsFetchingEmails] = useState(false);
 
   const applyEmailCacheSnapshot = (snapshot) => {
     if (!snapshot || !Array.isArray(snapshot.emails) || !snapshot.emails.length) {
@@ -77,10 +81,29 @@ const ModernApp = ()=>{
     return `${year}-${month}`;
   };
 
-  const fetchEmails = async ({ folder = activeFolder, page = emailPage } = {}) => {
+  const fetchEmails = async ({ folder = activeFolder, page = emailPage, background = false, force = false } = {}) => {
+    const folderKey = folder || activeFolder;
+    if (!background) {
+      setIsFetchingEmails(true);
+    }
+
+    if (!force && !background) {
+      const cachedData = emailCache?.[folderKey]?.[page];
+      if (cachedData) {
+        setMailbox(cachedData);
+        const requestedFolder = folderKey;
+        const isCustomLabel = requestedFolder?.startsWith('label:');
+        if (!isCustomLabel && cachedData?.active_folder && cachedData.active_folder !== activeFolder) {
+          setActiveFolder(cachedData.active_folder);
+        }
+        setIsFetchingEmails(false);
+        return cachedData;
+      }
+    }
+
     try {
       const params = new URLSearchParams({
-        folder,
+        folder: folderKey,
         page: String(page),
         per_page: '20',
         days: '14'
@@ -90,16 +113,32 @@ const ModernApp = ()=>{
         throw new Error('Email request failed');
       }
       const emailsData = await emailsResponse.json();
-      setMailbox(emailsData);
-      const requestedFolder = folder || activeFolder;
-      const isCustomLabel = requestedFolder?.startsWith('label:');
-      if (!isCustomLabel && emailsData?.active_folder && emailsData.active_folder !== activeFolder) {
-        setActiveFolder(emailsData.active_folder);
+      setEmailCache((prev) => ({
+        ...prev,
+        [folderKey]: {
+          ...(prev[folderKey] || {}),
+          [page]: emailsData,
+        },
+      }));
+
+      if (!background) {
+        setMailbox(emailsData);
+        const requestedFolder = folderKey;
+        const isCustomLabel = requestedFolder?.startsWith('label:');
+        if (!isCustomLabel && emailsData?.active_folder && emailsData.active_folder !== activeFolder) {
+          setActiveFolder(emailsData.active_folder);
+        }
       }
       return emailsData;
     } catch (err) {
-      setError("Failed to fetch emails.");
+      if (!background) {
+        setError("Failed to fetch emails.");
+      }
       return null;
+    } finally {
+      if (!background) {
+        setIsFetchingEmails(false);
+      }
     }
   };
 
@@ -164,6 +203,64 @@ const ModernApp = ()=>{
       fetchEmails({ folder: activeFolder, page: emailPage });
     }
   }, [emailPage, activeFolder, isLoggedIn]);
+
+  useEffect(() => {
+    if (!isLoggedIn) {
+      return;
+    }
+    const pagesToPrefetch = [];
+    for (let offset = 1; offset <= 5; offset += 1) {
+      const targetPage = emailPage + offset;
+      if (!emailCache[activeFolder]?.[targetPage]) {
+        pagesToPrefetch.push({ folder: activeFolder, page: targetPage });
+      }
+    }
+    if (pagesToPrefetch.length) {
+      setPrefetchQueue((prev) => {
+        const next = [...prev];
+        pagesToPrefetch.forEach((item) => {
+          const exists = next.some((queued) => queued.folder === item.folder && queued.page === item.page);
+          if (!exists) {
+            next.push(item);
+          }
+        });
+        return next;
+      });
+    }
+  }, [emailPage, activeFolder, isLoggedIn, emailCache]);
+
+  useEffect(() => {
+    if (!isLoggedIn || isPrefetching || prefetchQueue.length === 0) {
+      return;
+    }
+    const nextItem = prefetchQueue[0];
+    const runPrefetch = async () => {
+      setIsPrefetching(true);
+      if (!emailCache[nextItem.folder]?.[nextItem.page]) {
+        await fetchEmails({ folder: nextItem.folder, page: nextItem.page, background: true });
+      }
+      setPrefetchQueue((prev) => prev.slice(1));
+      setIsPrefetching(false);
+    };
+    runPrefetch();
+  }, [prefetchQueue, isPrefetching, isLoggedIn, emailCache]);
+
+  const handleRefresh = () => {
+    setEmailCache((prev) => {
+      if (!prev[activeFolder]) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[activeFolder];
+      return next;
+    });
+    setPrefetchQueue((prev) => prev.filter((entry) => entry.folder !== activeFolder));
+    if (emailPage === 1) {
+      fetchEmails({ folder: activeFolder, page: 1, force: true });
+    } else {
+      setEmailPage(1);
+    }
+  };
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -263,6 +360,7 @@ const ModernApp = ()=>{
         <EmailView 
           mailbox={mailbox} 
           loading={loading} 
+          fetching={isFetchingEmails}
           error={error} 
           onDeleteEmail={handleDeleteEmail} 
           selectedEmail={selectedEmail} 
@@ -271,6 +369,7 @@ const ModernApp = ()=>{
           onPageChange={handleEmailPageChange}
           activeFolder={activeFolder}
           onFolderChange={handleFolderChange}
+          onRefresh={handleRefresh}
         />
       );
       case 'calendar': return (
