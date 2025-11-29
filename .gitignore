@@ -5,4 +5,5 @@ llm_email_app.log
 tmp/
 venv/
 node_modules/
+/.vs
 data/

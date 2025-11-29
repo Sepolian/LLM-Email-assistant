@@ -12,6 +12,26 @@ const FOLDER_DISPLAY = [
   { key: 'trash', label: '回收站' },
 ];
 
+const Spinner = () => (
+  <div
+    style={{
+      width: 16,
+      height: 16,
+      border: '2px solid #fff',
+      borderTopColor: 'transparent',
+      borderRadius: '50%',
+      animation: 'spin 1s linear infinite',
+    }}
+  >
+    <style>
+      {`@keyframes spin {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }`}
+    </style>
+  </div>
+);
+
 const EmailDetailView = ({ email, onBack }) => {
   const { useMemo } = React;
   const domPurify = typeof window === "undefined" ? null : window.DOMPurify;
@@ -96,7 +116,7 @@ const EmailDetailView = ({ email, onBack }) => {
   );
 };
 
-function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSelectEmail, page, onPageChange, activeFolder, onFolderChange }) {
+function EmailView({ mailbox, loading, fetching = false, error, onDeleteEmail, selectedEmail, onSelectEmail, page, onPageChange, activeFolder, onFolderChange, onRefresh }) {
   const folders = mailbox?.folders || {};
   const folderData = folders[activeFolder] || { items: [], page: 1, has_next_page: false };
   const emails = folderData.items || [];
@@ -146,6 +166,17 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
     }
     return emails;
   }, [activeFolder, emails, allEmails]);
+
+  const activeFolderLabel = useMemo(() => {
+    if (!activeFolder) {
+      return '邮件';
+    }
+    if (activeFolder.startsWith('label:')) {
+      return activeFolder.replace('label:', '');
+    }
+    const entry = FOLDER_DISPLAY.find((item) => item.key === activeFolder);
+    return entry?.label || activeFolder;
+  }, [activeFolder]);
 
   const displayEmails = derivedEmails.slice(0, perPage);
   const isEmpty = !loading && displayEmails.length === 0;
@@ -253,7 +284,26 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
 
       {/* Email list column */}
       <div style={{ display: 'flex', flexDirection: 'column', background: '#fff', borderRadius: 8, padding: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
-        <div style={{ flex: 1, overflowY: 'auto', borderTop: '1px solid #f1f5f9' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <span style={{ fontWeight: 600 }}>{activeFolderLabel}</span>
+          {onRefresh && (
+            <button
+              type="button"
+              onClick={onRefresh}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 6,
+                border: '1px solid #cbd5f5',
+                background: '#fff',
+                cursor: 'pointer',
+                fontSize: 12,
+              }}
+            >
+              刷新
+            </button>
+          )}
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', borderTop: '1px solid #f1f5f9', opacity: fetching ? 0.6 : 1, transition: 'opacity 0.2s ease' }}>
           {loading ? (
             <p>Loading...</p>
           ) : isEmpty ? (
@@ -337,6 +387,9 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
                 onClick={handleSummarize}
                 disabled={summarizing}
                 style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
                   padding: "8px 12px",
                   background: "#1f6feb",
                   color: "#fff",
@@ -345,6 +398,7 @@ function EmailView({ mailbox, loading, error, onDeleteEmail, selectedEmail, onSe
                   cursor: "pointer"
                 }}
               >
+                {summarizing && <Spinner />}
                 {summarizing ? "Summarizing..." : "Summarize"}
               </button>
 
