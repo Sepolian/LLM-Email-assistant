@@ -3,7 +3,7 @@ __pycache__/
 .env
 llm_email_app.log
 tmp/
-venv/
+.venv/
 node_modules/
 /.vs
 data/
