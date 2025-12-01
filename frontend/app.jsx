@@ -282,10 +282,10 @@ const ModernApp = ()=>{
   }, [emailPage, activeFolder, isLoggedIn]);
 
   useEffect(() => {
-    if (isLoggedIn) {
+    if (isLoggedIn && page === '/calendar') {
       fetchCalendarEvents(calendarMonth);
     }
-  }, [calendarMonth, isLoggedIn]);
+  }, [calendarMonth, isLoggedIn, page]);
   
   const handleEmailPageChange = (newPage) => {
     if (newPage > 0 && newPage !== emailPage) {
@@ -346,6 +346,65 @@ const ModernApp = ()=>{
       setError("Failed to delete email.");
     }
   };
+
+  const handleCreateEvent = async (eventData) => {
+    try {
+      const response = await fetch('/calendar/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(eventData),
+      });
+      if (response.ok) {
+        fetchCalendarEvents(calendarMonth);
+        return true;
+      } else {
+        const errorData = await response.json();
+        setCalendarError(errorData.detail || "Failed to create event.");
+        return false;
+      }
+    } catch (err) {
+      setCalendarError("Failed to create event.");
+      return false;
+    }
+  };
+
+  const handleUpdateEvent = async (eventId, updates) => {
+    try {
+      const response = await fetch(`/calendar/events/${eventId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates),
+      });
+      if (response.ok) {
+        fetchCalendarEvents(calendarMonth);
+        return true;
+      } else {
+        const errorData = await response.json();
+        setCalendarError(errorData.detail || "Failed to update event.");
+        return false;
+      }
+    } catch (err) {
+      setCalendarError("Failed to update event.");
+      return false;
+    }
+  };
+
+  const handleDeleteEvent = async (eventId) => {
+    try {
+      const response = await fetch(`/calendar/events/${eventId}`, { method: 'DELETE' });
+      if (response.ok) {
+        fetchCalendarEvents(calendarMonth);
+        return true;
+      } else {
+        const errorData = await response.json();
+        setCalendarError(errorData.detail || "Failed to delete event.");
+        return false;
+      }
+    } catch (err) {
+      setCalendarError("Failed to delete event.");
+      return false;
+    }
+  };
   
   const renderContent = ()=>{
     if(loading) {
@@ -399,6 +458,9 @@ const ModernApp = ()=>{
           currentMonth={calendarMonth}
           onMonthChange={handleCalendarMonthChange}
           onResetMonth={handleCalendarToday}
+          onCreateEvent={handleCreateEvent}
+          onUpdateEvent={handleUpdateEvent}
+          onDeleteEvent={handleDeleteEvent}
         />
       );
       case 'settings': return <SettingsView user={user} onAutomationActivity={handleAutomationActivity} />;
