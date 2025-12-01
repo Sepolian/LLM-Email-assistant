@@ -201,11 +201,14 @@ function EmailView({
 
   const [summary, setSummary] = useState(null);
   const [summarizing, setSummarizing] = useState(false);
+  const [proposals, setProposals] = useState([]);
+  const [proposalStatuses, setProposalStatuses] = useState({});
 
   useEffect(() => {
     setViewingEmail(selectedEmail || null);
     setSummary(null);
     setSummarizing(false);
+    setProposals([]);
   }, [selectedEmail]);
 
   const handleSummarize = async () => {
@@ -213,6 +216,7 @@ function EmailView({
     const currentEmailId = viewingEmail.id;
     setSummarizing(true);
     setSummary(null);
+    setProposals([]);
     try {
       const res = await fetch(`/api/emails/${encodeURIComponent(currentEmailId)}/summarize`, {
         method: 'POST',
@@ -220,7 +224,8 @@ function EmailView({
       });
       const data = await res.json();
       if (latestViewingIdRef.current === currentEmailId) {
-        setSummary(data.summary || JSON.stringify(data));
+        setSummary(data.summary || "");
+        setProposals(data.proposals || []);
       }
     } catch (err) {
       if (latestViewingIdRef.current === currentEmailId) {
@@ -232,6 +237,25 @@ function EmailView({
       }
     }
   };
+
+const handleAddToCalendar = async (proposal, idx) => {
+  // mark as pending
+  setProposalStatuses((prev) => ({ ...prev, [idx]: "Adding..." }));
+  try {
+    const res = await fetch("/calendar/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(proposal),
+    });
+    if (res.ok) {
+      setProposalStatuses((prev) => ({ ...prev, [idx]: "Added ✓" }));
+    } else {
+      setProposalStatuses((prev) => ({ ...prev, [idx]: "Failed ✗" }));
+    }
+  } catch (err) {
+    setProposalStatuses((prev) => ({ ...prev, [idx]: "Error ✗" }));
+  }
+};
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '180px 360px 1fr', gap: 12, minHeight: '70vh' }}>
@@ -443,6 +467,38 @@ function EmailView({
                   </div>
                 )}
               </div>
+              {proposals.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <h3>Proposals</h3>
+                  {proposals.map((p, idx) => (
+                    <div key={idx} style={{ border: '1px solid #ddd', padding: 12, borderRadius: 6, marginBottom: 8 }}>
+                      <p><strong>{p.title}</strong></p>
+                      <p>{new Date(p.start).toLocaleString()} - {new Date(p.end).toLocaleString()}</p>
+                      {p.location && <p> {p.location}</p>}
+                      {p.notes && <p> {p.notes}</p>}
+                      <button
+                        onClick={() => handleAddToCalendar(p, idx)}
+                        style={{
+                          disabled: proposalStatuses[idx] === "Added ✓", // Disable when added
+                          marginTop: 8,
+                          padding: '6px 10px',
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          background: proposalStatuses[idx] === "Added ✓" ? "#9ca3af" : "#1f6feb", // gray if added
+                          color: "#fff",
+                          border: "none",
+                          borderRadius: 4,
+                          cursor: proposalStatuses[idx] === "Added ✓" ? "not-allowed" : "pointer",
+                        }}
+                      >
+                        {proposalStatuses[idx] === "Adding..." && <Spinner />}
+                        {proposalStatuses[idx] || "Add to Calendar"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </>
         ) : (
