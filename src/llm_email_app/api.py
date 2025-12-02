@@ -318,8 +318,6 @@ def _auto_label_recent_emails(gmail_client: GmailClient) -> int:
             continue
 
         display_name = (subject or snippet or sender or message_id or '')[:80]
-        if display_name:
-            _append_automation_log(f"开始处理邮件「{display_name}」")
 
         try:
             evaluation = LLM_CLIENT.evaluate_label_rules(
@@ -337,6 +335,9 @@ def _auto_label_recent_emails(gmail_client: GmailClient) -> int:
 
         matches = evaluation.get('matches') or []
         if not matches:
+            # Mark as processed even if no rules matched to avoid re-evaluating
+            PROCESSED_STORE.mark_processed(message_id)
+            _append_automation_log(f"邮件「{display_name}」无匹配规则，已标记为已处理")
             if delay_seconds:
                 time.sleep(delay_seconds)
             continue
