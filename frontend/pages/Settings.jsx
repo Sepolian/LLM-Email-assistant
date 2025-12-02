@@ -2,6 +2,7 @@ const { useState, useEffect } = React;
 
 const SettingsView = ({ user, onAutomationActivity }) => {
   const [automationEnabled, setAutomationEnabled] = useState(false);
+  const [autoAddEvents, setAutoAddEvents] = useState(false);
   const [rules, setRules] = useState([]);
   const [status, setStatus] = useState(null);
   const [form, setForm] = useState({ label: '', reason: '' });
@@ -13,9 +14,10 @@ const SettingsView = ({ user, onAutomationActivity }) => {
   const loadAutomationState = async () => {
     try {
       setLoading(true);
-      const [rulesResp, statusResp] = await Promise.all([
+      const [rulesResp, statusResp, extraSettingsResp] = await Promise.all([
         fetch('/automation/rules'),
         fetch('/automation/status'),
+        fetch('/automation/extra-settings'),
       ]);
 
       if (!rulesResp.ok) {
@@ -31,6 +33,12 @@ const SettingsView = ({ user, onAutomationActivity }) => {
       } else {
         setStatus(null);
       }
+
+      if (extraSettingsResp.ok) {
+        const extraData = await extraSettingsResp.json();
+        setAutoAddEvents(!!extraData.auto_add_events);
+      }
+
       setError(null);
     } catch (err) {
       setError(err.message || '加载自动化配置失败');
@@ -71,6 +79,25 @@ const SettingsView = ({ user, onAutomationActivity }) => {
     } catch (err) {
       setAutomationEnabled(!nextValue);
       setError(err.message || '更新自动化开关失败');
+    }
+  };
+
+  const toggleAutoAddEvents = async () => {
+    const nextValue = !autoAddEvents;
+    setAutoAddEvents(nextValue);
+    try {
+      const resp = await fetch('/automation/extra-settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_add_events: nextValue }),
+      });
+      if (!resp.ok) {
+        throw new Error('服务端更新失败');
+      }
+      setError(null);
+    } catch (err) {
+      setAutoAddEvents(!nextValue);
+      setError(err.message || '更新自动添加日程设置失败');
     }
   };
 
@@ -304,6 +331,41 @@ const SettingsView = ({ user, onAutomationActivity }) => {
                 </tbody>
               </table>
             )}
+          </div>
+        </section>
+
+        {/* Auto Add Events Section */}
+        <section style={{ borderTop: '1px solid #f1f5f9', paddingTop: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <h3 style={{ margin: '0 0 4px 0' }}>📅 自动添加日程</h3>
+              <p style={{ color: '#6b7280', margin: 0 }}>
+                自动从邮件中提取日程并添加到日历。关闭时，提取的日程会显示在日历页面等待您确认。
+              </p>
+            </div>
+            <button
+              onClick={toggleAutoAddEvents}
+              disabled={loading}
+              style={{
+                padding: '8px 16px',
+                borderRadius: 999,
+                border: 'none',
+                background: autoAddEvents ? '#22c55e' : '#cbd5f5',
+                color: autoAddEvents ? '#fff' : '#0f172a',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                minWidth: 120,
+              }}
+            >
+              {autoAddEvents ? '已开启' : '已关闭'}
+            </button>
+          </div>
+          <div style={{ marginTop: 12, padding: 12, background: autoAddEvents ? '#dcfce7' : '#fef3c7', borderRadius: 8, border: autoAddEvents ? '1px solid #86efac' : '1px solid #fde68a' }}>
+            <div style={{ fontSize: 13, color: autoAddEvents ? '#166534' : '#92400e' }}>
+              {autoAddEvents 
+                ? '✅ 系统会自动将邮件中识别出的日程事件添加到您的日历中。'
+                : '⏸️ 系统会将邮件中识别出的日程事件保存为提案，您可以在日历页面手动确认添加。'
+              }
+            </div>
           </div>
         </section>
 

@@ -3,6 +3,55 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
   const [isEditing, setIsEditing] = React.useState(false);
   const [isCreating, setIsCreating] = React.useState(false);
   const [editForm, setEditForm] = React.useState({});
+  const [proposals, setProposals] = React.useState([]);
+  const [proposalsLoading, setProposalsLoading] = React.useState(false);
+  const [selectedProposal, setSelectedProposal] = React.useState(null);
+
+  // Fetch pending proposals
+  const fetchProposals = async () => {
+    try {
+      setProposalsLoading(true);
+      const resp = await fetch('/proposals?status=pending');
+      if (resp.ok) {
+        const data = await resp.json();
+        setProposals(data.proposals || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch proposals:', err);
+    } finally {
+      setProposalsLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    fetchProposals();
+  }, []);
+
+  const handleAcceptProposal = async (proposalId) => {
+    try {
+      const resp = await fetch(`/proposals/${proposalId}/accept`, { method: 'POST' });
+      if (resp.ok) {
+        await fetchProposals();
+        setSelectedProposal(null);
+        // Trigger calendar refresh if parent provides callback
+        if (onResetMonth) onResetMonth();
+      }
+    } catch (err) {
+      console.error('Failed to accept proposal:', err);
+    }
+  };
+
+  const handleRejectProposal = async (proposalId) => {
+    try {
+      const resp = await fetch(`/proposals/${proposalId}/reject`, { method: 'POST' });
+      if (resp.ok) {
+        await fetchProposals();
+        setSelectedProposal(null);
+      }
+    } catch (err) {
+      console.error('Failed to reject proposal:', err);
+    }
+  };
 
   const handleEventClick = (event) => {
     setSelectedEvent(event);
@@ -289,6 +338,57 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
           })}
         </div>
       </div>
+
+      {/* Pending Proposals Section */}
+      {proposals.length > 0 && (
+        <div style={{marginTop:24, background:'#fef3c7', padding:16, borderRadius:12, border:'1px solid #fcd34d'}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <h3 style={{margin:0, color:'#92400e'}}>📬 待处理的日程提案</h3>
+            <span style={{color:'#b45309',fontSize:12}}>{proposals.length} 个待确认</span>
+          </div>
+          <div style={{display:'flex',flexDirection:'column',gap:12}}>
+            {proposals.map(proposal => {
+              const startDate = proposal.start ? new Date(proposal.start) : null;
+              const formatProposalDate = () => {
+                if (!startDate) return '日期待定';
+                return `${startDate.getMonth() + 1}月${startDate.getDate()}日 ${startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+              };
+              return (
+                <div key={proposal.id} style={{background:'#fff',padding:14,borderRadius:12,border:'1px solid #fde68a'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,color:'#0f172a'}}>{proposal.title || '未命名事件'}</div>
+                      <div style={{color:'#92400e',fontSize:13,marginTop:4}}>{formatProposalDate()}</div>
+                      {proposal.location && <div style={{color:'#6b7280',fontSize:12,marginTop:2}}>📍 {proposal.location}</div>}
+                      <div style={{color:'#6b7280',fontSize:12,marginTop:4}}>来自邮件：{proposal.email_subject?.slice(0, 50)}</div>
+                      {proposal.email_summary && (
+                        <div style={{color:'#475569',fontSize:12,marginTop:4,background:'#f8fafc',padding:8,borderRadius:6}}>
+                          {proposal.email_summary}
+                        </div>
+                      )}
+                    </div>
+                    <div style={{display:'flex',gap:8,flexShrink:0}}>
+                      <button 
+                        onClick={() => handleRejectProposal(proposal.id)}
+                        style={{padding:'6px 12px',borderRadius:6,border:'1px solid #ef4444',color:'#ef4444',background:'#fff',cursor:'pointer',fontSize:13}}
+                      >
+                        忽略
+                      </button>
+                      <button 
+                        onClick={() => handleAcceptProposal(proposal.id)}
+                        style={{padding:'6px 12px',borderRadius:6,border:0,background:'#22c55e',color:'#fff',cursor:'pointer',fontSize:13}}
+                      >
+                        添加到日历
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div style={{marginTop:24}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
           <h3 style={{margin:0}}>最新事件</h3>
