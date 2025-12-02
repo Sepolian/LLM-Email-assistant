@@ -315,34 +315,47 @@ class OpenAIClient:
                     })
             return {'matches': matches}
 
-        payload = {
-            'email': {
-                'subject': subject or '',
-                'sender': sender or '',
-                'body': email_body or '',
-            },
-            'rules': [
-                {
-                    'id': rule.get('id') or rule.get('rule_id'),
-                    'label': rule.get('label', ''),
-                    'reason': rule.get('reason', ''),
-                }
-                for rule in rules
-                if rule.get('id') or rule.get('rule_id')
-            ],
-        }
-
         system_prompt = (
-            'You are an email triage assistant. '
-            'Given a single email and a list of labeling rules, return JSON only with matches. '
-            'Each match references the rule id and includes a short explanation plus confidence (0-1). '
-            'Only match a rule when the email clearly satisfies the described condition.'
+            "You are an intelligent email triage assistant that evaluates emails against user-defined labeling rules. "
+            "Your task is to determine which rules match a given email based on the rule's description/reason. "
+            "You must analyze the email content, subject, and sender carefully to make accurate matching decisions.\n\n"
+            "MATCHING GUIDELINES:\n"
+            "- Only match a rule when the email CLEARLY satisfies the condition described in the rule's reason field.\n"
+            "- Consider the full context: subject line, sender address/name, and email body content.\n"
+            "- Be conservative - when uncertain, do NOT match. False positives are worse than false negatives.\n"
+            "- A rule's 'label' field is just the tag name; the 'reason' field describes WHEN to apply it.\n"
+            "- For promotional/marketing rules, look for sales language, discount codes, unsubscribe links.\n"
+            "- For sender-based rules, check if sender email/name matches the described criteria.\n"
+            "- For content-based rules, look for keywords or themes mentioned in the reason.\n\n"
+            "CONFIDENCE SCORING:\n"
+            "- 0.9-1.0: Perfect match, email explicitly satisfies the rule condition.\n"
+            "- 0.7-0.9: Strong match, high confidence the rule applies.\n"
+            "- 0.5-0.7: Moderate match, rule likely applies but some ambiguity.\n"
+            "- Below 0.5: Do NOT include in matches - not confident enough.\n\n"
+            "Respond with JSON only (no markdown, no extra explanation)."
         )
 
+        # Build structured context for the user prompt
+        rules_description = "\n".join([
+            f"  - Rule ID: {rule.get('id') or rule.get('rule_id')}, Label: \"{rule.get('label', '')}\", Reason: \"{rule.get('reason', '')}\""
+            for rule in rules
+            if rule.get('id') or rule.get('rule_id')
+        ])
+
         user_prompt = (
-            "Email and rules (JSON):\n" +
-            json.dumps(payload, ensure_ascii=False, indent=2) +
-            "\nRespond strictly with JSON shaped as {\"matches\": [{\"rule_id\": \"<id>\", \"confidence\": 0-1, \"explanation\": \"text\"}]}"
+            f"EMAIL TO EVALUATE:\n"
+            f"Subject: {subject or '(no subject)'}\n"
+            f"From: {sender or '(unknown sender)'}\n"
+            f"Body:\n{email_body or '(empty body)'}\n\n"
+            f"RULES TO CHECK:\n{rules_description}\n\n"
+            "Evaluate each rule against this email. For rules that match (confidence >= 0.5), include them in the response.\n\n"
+            "Produce a JSON object with this exact structure:\n"
+            "{\n"
+            "  \"matches\": [\n"
+            "    {\"rule_id\": \"<id>\", \"confidence\": <0.5-1.0>, \"explanation\": \"<brief reason why this rule matches>\"}\n"
+            "  ]\n"
+            "}\n\n"
+            "If no rules match, return {\"matches\": []}. Return JSON only."
         )
 
         messages = [
