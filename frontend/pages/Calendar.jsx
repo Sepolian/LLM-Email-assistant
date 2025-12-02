@@ -1,4 +1,5 @@
 const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange, onResetMonth, onCreateEvent, onUpdateEvent, onDeleteEvent }) => {
+  const { t } = useTranslation();
   const [selectedEvent, setSelectedEvent] = React.useState(null);
   const [isEditing, setIsEditing] = React.useState(false);
   const [isCreating, setIsCreating] = React.useState(false);
@@ -135,7 +136,7 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
   };
 
   const handleDeleteClick = async () => {
-    if (onDeleteEvent && confirm('Are you sure you want to delete this event?')) {
+    if (onDeleteEvent && confirm(t('calendar.confirmDelete'))) {
       const success = await onDeleteEvent(selectedEvent.id);
       if (success) {
         handleCloseModal();
@@ -253,13 +254,15 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
     cells.push(null);
   }
 
-  const monthLabel = `${activeMonth.getFullYear()}年 ${activeMonth.getMonth() + 1}月`;
+  const monthLabel = i18n.currentLang === 'zh' 
+    ? `${activeMonth.getFullYear()}${t('common.year')} ${activeMonth.getMonth() + 1}${t('common.month')}`
+    : activeMonth.toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
 
   const formatRange = (event) => {
     const start = event?.start?.dateTime;
     const end = event?.end?.dateTime;
     if (!start || !end) {
-      return '全天';
+      return t('calendar.allDay');
     }
     const startDate = new Date(start);
     const endDate = new Date(end);
@@ -269,9 +272,11 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
   const formatDayBadge = (event) => {
     const start = getEventStart(event);
     if (!start) {
-      return '日期待定';
+      return t('calendar.dateTBD');
     }
-    return `${start.getMonth() + 1}月${start.getDate()}日`;
+    return i18n.currentLang === 'zh' 
+      ? `${start.getMonth() + 1}${t('common.month')}${start.getDate()}日`
+      : start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
   return (
@@ -279,17 +284,17 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
       <div style={{display:'flex',justifyContent:'space-between',marginBottom:12,alignItems:'center'}}>
         <div>
           <h2 style={{margin:0}}>{monthLabel}</h2>
-          <p style={{margin:0,color:'#94a3b8'}}>浏览或跳转至任意月份，查看最近更新的事件。</p>
+          <p style={{margin:0,color:'#94a3b8'}}>{t('calendar.browseDesc')}</p>
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          <button onClick={() => onMonthChange && onMonthChange(-1)} style={{padding:'6px 10px',borderRadius:8,border:'1px solid #dbe4ff'}}>上一月</button>
-          <button onClick={() => onResetMonth && onResetMonth()} style={{padding:'6px 10px',borderRadius:8,border:'1px solid #dbe4ff'}}>今天</button>
-          <button onClick={() => onMonthChange && onMonthChange(1)} style={{padding:'6px 10px',borderRadius:8,border:'1px solid #dbe4ff'}}>下一月</button>
-          <button onClick={handleCreateClick} style={{background:'#2563eb',color:'#fff',padding:'6px 10px',borderRadius:8,border:0}}>+ 新建日程</button>
+          <button onClick={() => onMonthChange && onMonthChange(-1)} style={{padding:'6px 10px',borderRadius:8,border:'1px solid #dbe4ff'}}>{t('calendar.prevMonth')}</button>
+          <button onClick={() => onResetMonth && onResetMonth()} style={{padding:'6px 10px',borderRadius:8,border:'1px solid #dbe4ff'}}>{t('calendar.today')}</button>
+          <button onClick={() => onMonthChange && onMonthChange(1)} style={{padding:'6px 10px',borderRadius:8,border:'1px solid #dbe4ff'}}>{t('calendar.nextMonth')}</button>
+          <button onClick={handleCreateClick} style={{background:'#2563eb',color:'#fff',padding:'6px 10px',borderRadius:8,border:0}}>{t('calendar.newEvent')}</button>
         </div>
       </div>
       <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:8,textAlign:'center',marginBottom:8}}>
-        {['日','一','二','三','四','五','六'].map(d=> <div key={d} style={{color:'#94a3b8'}}>{d}</div>)}
+        {[t('calendar.sun'),t('calendar.mon'),t('calendar.tue'),t('calendar.wed'),t('calendar.thu'),t('calendar.fri'),t('calendar.sat')].map(d=> <div key={d} style={{color:'#94a3b8'}}>{d}</div>)}
       </div>
       <div style={{position:'relative', minHeight: 200}}>
         {loading && (
@@ -304,7 +309,7 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
             borderRadius: 12,
             backdropFilter: 'blur(2px)'
           }}>
-            <div style={{color:'#2563eb', fontWeight:600}}>Loading...</div>
+            <div style={{color:'#2563eb', fontWeight:600}}>{t('calendar.loading')}</div>
           </div>
         )}
         <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:8}}>
@@ -322,16 +327,16 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
               <div key={key} style={{minHeight:120,border:`1px solid ${borderColor}`,borderRadius:12,padding:10,textAlign:'left',background:cellBackground,display:'flex',flexDirection:'column',gap:6}}>
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                   <div style={{fontWeight:700,color:'#0f172a'}}>{cellDate.getDate()}</div>
-                  {today && <span style={{fontSize:11,color:'#2563eb',fontWeight:600}}>今天</span>}
+                  {today && <span style={{fontSize:11,color:'#2563eb',fontWeight:600}}>{t('calendar.today')}</span>}
                 </div>
                 <div style={{flex:1,display:'flex',flexDirection:'column',gap:4}}>
                   {dayEvents.slice(0,2).map(evt => (
                     <div key={(evt.id || evt.summary) + key} onClick={() => handleEventClick(evt)} style={{cursor:'pointer',fontSize:11,color:'#1e1b4b',padding:'3px 6px',borderRadius:999,background:'#c7d2fe',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>
-                      {evt.summary || '未命名事件'}
+                      {evt.summary || t('calendar.unnamed')}
                     </div>
                   ))}
-                  {dayEvents.length === 0 && <div style={{fontSize:11,color:'#94a3b8'}}>暂无日程</div>}
-                  {dayEvents.length > 2 && <div style={{fontSize:11,color:'#4c1d95'}}>+{dayEvents.length - 2} 更多</div>}
+                  {dayEvents.length === 0 && <div style={{fontSize:11,color:'#94a3b8'}}>{t('calendar.noEvents')}</div>}
+                  {dayEvents.length > 2 && <div style={{fontSize:11,color:'#4c1d95'}}>+{dayEvents.length - 2} {t('calendar.moreEvents')}</div>}
                 </div>
               </div>
             );
@@ -343,24 +348,26 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
       {proposals.length > 0 && (
         <div style={{marginTop:24, background:'#fef3c7', padding:16, borderRadius:12, border:'1px solid #fcd34d'}}>
           <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-            <h3 style={{margin:0, color:'#92400e'}}>📬 待处理的日程提案</h3>
-            <span style={{color:'#b45309',fontSize:12}}>{proposals.length} 个待确认</span>
+            <h3 style={{margin:0, color:'#92400e'}}>{t('calendar.pendingProposals')}</h3>
+            <span style={{color:'#b45309',fontSize:12}}>{proposals.length} {t('calendar.pendingCount')}</span>
           </div>
           <div style={{display:'flex',flexDirection:'column',gap:12}}>
             {proposals.map(proposal => {
               const startDate = proposal.start ? new Date(proposal.start) : null;
               const formatProposalDate = () => {
-                if (!startDate) return '日期待定';
-                return `${startDate.getMonth() + 1}月${startDate.getDate()}日 ${startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+                if (!startDate) return t('calendar.dateTBD');
+                return i18n.currentLang === 'zh'
+                  ? `${startDate.getMonth() + 1}${t('common.month')}${startDate.getDate()}日 ${startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                  : startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
               };
               return (
                 <div key={proposal.id} style={{background:'#fff',padding:14,borderRadius:12,border:'1px solid #fde68a'}}>
                   <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:12}}>
                     <div style={{flex:1}}>
-                      <div style={{fontWeight:600,color:'#0f172a'}}>{proposal.title || '未命名事件'}</div>
+                      <div style={{fontWeight:600,color:'#0f172a'}}>{proposal.title || t('calendar.unnamed')}</div>
                       <div style={{color:'#92400e',fontSize:13,marginTop:4}}>{formatProposalDate()}</div>
                       {proposal.location && <div style={{color:'#6b7280',fontSize:12,marginTop:2}}>📍 {proposal.location}</div>}
-                      <div style={{color:'#6b7280',fontSize:12,marginTop:4}}>来自邮件：{proposal.email_subject?.slice(0, 50)}</div>
+                      <div style={{color:'#6b7280',fontSize:12,marginTop:4}}>{t('calendar.fromEmail')}{proposal.email_subject?.slice(0, 50)}</div>
                       {proposal.email_summary && (
                         <div style={{color:'#475569',fontSize:12,marginTop:4,background:'#f8fafc',padding:8,borderRadius:6}}>
                           {proposal.email_summary}
@@ -372,13 +379,13 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
                         onClick={() => handleRejectProposal(proposal.id)}
                         style={{padding:'6px 12px',borderRadius:6,border:'1px solid #ef4444',color:'#ef4444',background:'#fff',cursor:'pointer',fontSize:13}}
                       >
-                        忽略
+                        {t('calendar.ignore')}
                       </button>
                       <button 
                         onClick={() => handleAcceptProposal(proposal.id)}
                         style={{padding:'6px 12px',borderRadius:6,border:0,background:'#22c55e',color:'#fff',cursor:'pointer',fontSize:13}}
                       >
-                        添加到日历
+                        {t('calendar.addToCalendar')}
                       </button>
                     </div>
                   </div>
@@ -391,17 +398,17 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
 
       <div style={{marginTop:24}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-          <h3 style={{margin:0}}>最新事件</h3>
-          <span style={{color:'#94a3b8',fontSize:12}}>按更新时间倒序</span>
+          <h3 style={{margin:0}}>{t('calendar.recentEvents')}</h3>
+          <span style={{color:'#94a3b8',fontSize:12}}>{t('calendar.sortedByTime')}</span>
         </div>
-        {loading && <p>Loading events...</p>}
+        {loading && <p>{t('calendar.loading')}</p>}
         {error && <p>{error}</p>}
-        {!loading && mostRecent.length === 0 && <div style={{color:'#94a3b8'}}>暂无事件</div>}
+        {!loading && mostRecent.length === 0 && <div style={{color:'#94a3b8'}}>{t('calendar.noEventsYet')}</div>}
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {mostRecent.map(event => (
             <div key={event.id || event.summary} onClick={() => handleEventClick(event)} style={{cursor:'pointer',display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 20px',border:'1px solid #dbe4ff',borderRadius:16,background:'#eef2ff'}}>
               <div>
-                <div style={{fontWeight:600,color:'#0f172a'}}>{event.summary || '未命名事件'}</div>
+                <div style={{fontWeight:600,color:'#0f172a'}}>{event.summary || t('calendar.unnamed')}</div>
                 <div style={{color:'#475569',fontSize:13}}>{formatRange(event)}</div>
               </div>
               <div style={{fontWeight:700,color:'#1d4ed8',background:'#c7d2fe',padding:'4px 10px',borderRadius:999}}>{formatDayBadge(event)}</div>
@@ -414,17 +421,17 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
           <div style={{background:'#fff',padding:24,borderRadius:12,width:400,maxWidth:'90%'}}>
             {isEditing || isCreating ? (
               <div style={{display:'flex',flexDirection:'column',gap:12}}>
-                <h3>{isCreating ? '新建日程' : '编辑日程'}</h3>
+                <h3>{isCreating ? t('calendar.newEventTitle') : t('calendar.editEvent')}</h3>
                 <input 
                   value={editForm.summary || ''} 
                   onChange={e => setEditForm({...editForm, summary: e.target.value})}
-                  placeholder="标题"
+                  placeholder={t('calendar.titlePlaceholder')}
                   style={{padding:8,borderRadius:4,border:'1px solid #ccc'}}
                 />
                 <textarea 
                   value={editForm.description || ''} 
                   onChange={e => setEditForm({...editForm, description: e.target.value})}
-                  placeholder="描述"
+                  placeholder={t('calendar.descPlaceholder')}
                   style={{padding:8,borderRadius:4,border:'1px solid #ccc',minHeight:60}}
                 />
                 <input 
@@ -440,19 +447,19 @@ const CalendarView = ({ events = [], loading, error, currentMonth, onMonthChange
                   style={{padding:8,borderRadius:4,border:'1px solid #ccc'}}
                 />
                 <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}}>
-                  <button onClick={handleCloseModal} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #ccc',background:'#fff'}}>取消</button>
-                  <button onClick={handleSaveClick} style={{padding:'8px 16px',borderRadius:6,border:0,background:'#2563eb',color:'#fff'}}>保存</button>
+                  <button onClick={handleCloseModal} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #ccc',background:'#fff'}}>{t('calendar.cancel')}</button>
+                  <button onClick={handleSaveClick} style={{padding:'8px 16px',borderRadius:6,border:0,background:'#2563eb',color:'#fff'}}>{t('calendar.save')}</button>
                 </div>
               </div>
             ) : (
               <div>
-                <h3 style={{marginTop:0}}>{selectedEvent.summary || '未命名事件'}</h3>
+                <h3 style={{marginTop:0}}>{selectedEvent.summary || t('calendar.unnamed')}</h3>
                 <p style={{color:'#64748b',fontSize:14}}>{formatRange(selectedEvent)}</p>
                 {selectedEvent.description && <p style={{background:'#f1f5f9',padding:12,borderRadius:8,fontSize:14}}>{selectedEvent.description}</p>}
                 <div style={{display:'flex',justifyContent:'flex-end',gap:8,marginTop:24}}>
-                  <button onClick={handleDeleteClick} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #ef4444',color:'#ef4444',background:'#fff'}}>删除</button>
-                  <button onClick={handleEditClick} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #2563eb',color:'#2563eb',background:'#fff'}}>编辑</button>
-                  <button onClick={handleCloseModal} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #ccc',background:'#fff'}}>关闭</button>
+                  <button onClick={handleDeleteClick} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #ef4444',color:'#ef4444',background:'#fff'}}>{t('calendar.delete')}</button>
+                  <button onClick={handleEditClick} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #2563eb',color:'#2563eb',background:'#fff'}}>{t('calendar.edit')}</button>
+                  <button onClick={handleCloseModal} style={{padding:'8px 16px',borderRadius:6,border:'1px solid #ccc',background:'#fff'}}>{t('calendar.close')}</button>
                 </div>
               </div>
             )}

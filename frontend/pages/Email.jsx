@@ -5,11 +5,11 @@
 
 const { useState, useMemo, useEffect, useRef } = React;
 
-const FOLDER_DISPLAY = [
-  { key: 'inbox', label: '收件箱' },
-  { key: 'sent', label: '已发送' },
-  { key: 'drafts', label: '草稿' },
-  { key: 'trash', label: '回收站' },
+const getFolderDisplay = (t) => [
+  { key: 'inbox', label: t('email.inbox') },
+  { key: 'sent', label: t('email.sent') },
+  { key: 'drafts', label: t('email.drafts') },
+  { key: 'trash', label: t('email.trash') },
 ];
 
 const Spinner = () => (
@@ -34,6 +34,7 @@ const Spinner = () => (
 
 const EmailDetailView = ({ email, onBack }) => {
   const { useMemo } = React;
+  const { t } = useTranslation();
   const domPurify = typeof window === 'undefined' ? null : window.DOMPurify;
 
   const bodyString = useMemo(() => String(email.body || ''), [email.body]);
@@ -73,7 +74,7 @@ const EmailDetailView = ({ email, onBack }) => {
           cursor: 'pointer',
         }}
       >
-        &larr; 返回列表
+        {t('email.backToList')}
       </button>
 
       <div style={{ borderBottom: '1px solid #eee', paddingBottom: '8px', marginBottom: '16px' }}>
@@ -128,6 +129,8 @@ function EmailView({
   onFolderChange,
   onRefresh,
 }) {
+  const { t } = useTranslation();
+  const FOLDER_DISPLAY = getFolderDisplay(t);
   const folders = mailbox?.folders || {};
   const folderData = folders[activeFolder] || { items: [], page: 1, has_next_page: false };
   const emails = folderData.items || [];
@@ -181,14 +184,14 @@ function EmailView({
 
   const activeFolderLabel = useMemo(() => {
     if (!activeFolder) {
-      return '邮件';
+      return t('nav.email');
     }
     if (activeFolder.startsWith('label:')) {
       return activeFolder.replace('label:', '');
     }
     const entry = FOLDER_DISPLAY.find((item) => item.key === activeFolder);
     return entry?.label || activeFolder;
-  }, [activeFolder]);
+  }, [activeFolder, t]);
 
   const displayEmails = derivedEmails.slice(0, perPage);
   const isEmpty = !loading && displayEmails.length === 0;
@@ -261,7 +264,7 @@ const handleAddToCalendar = async (proposal, idx) => {
     <div style={{ display: 'grid', gridTemplateColumns: '180px 360px 1fr', gap: 12, minHeight: '70vh' }}>
       {/* Folder column */}
       <div style={{ background: '#fff', borderRadius: 8, padding: 12, boxShadow: '0 1px 2px rgba(0,0,0,0.05)', height: 'fit-content' }}>
-        <h4 style={{ margin: '0 0 8px 0', fontSize: 14 }}>文件夹</h4>
+        <h4 style={{ margin: '0 0 8px 0', fontSize: 14 }}>{t('email.folders')}</h4>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {FOLDER_DISPLAY.map(({ key, label }) => (
             <button
@@ -288,7 +291,7 @@ const handleAddToCalendar = async (proposal, idx) => {
         </div>
         {labelFolders.length > 0 && (
           <>
-            <h4 style={{ margin: '16px 0 8px 0', fontSize: 14 }}>自定义标签</h4>
+            <h4 style={{ margin: '16px 0 8px 0', fontSize: 14 }}>{t('email.customLabels')}</h4>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {labelFolders.map(({ key, label }) => (
                 <button
@@ -334,7 +337,7 @@ const handleAddToCalendar = async (proposal, idx) => {
                 fontSize: 12,
               }}
             >
-              刷新
+              {t('email.refresh')}
             </button>
           )}
         </div>
@@ -350,7 +353,7 @@ const handleAddToCalendar = async (proposal, idx) => {
           {loading ? (
             <p>Loading...</p>
           ) : isEmpty ? (
-            <p>没有邮件</p>
+            <p>{t('email.noEmails')}</p>
           ) : (
             displayEmails.map((e) => (
               <div
@@ -362,7 +365,7 @@ const handleAddToCalendar = async (proposal, idx) => {
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <strong style={{ fontSize: 14 }}>{e.subject || '(无主题)'}</strong>
+                  <strong style={{ fontSize: 14 }}>{e.subject || t('email.noSubject')}</strong>
                   <span style={{ fontSize: 12, color: '#94a3b8' }}>
                     {new Date(e.received || Date.now()).toLocaleDateString()}
                   </span>
@@ -404,7 +407,7 @@ const handleAddToCalendar = async (proposal, idx) => {
               cursor: page === 1 ? 'not-allowed' : 'pointer',
             }}
           >
-            上一页
+            {t('email.prevPage')}
           </button>
           <div
             style={{
@@ -414,7 +417,7 @@ const handleAddToCalendar = async (proposal, idx) => {
               fontWeight: 600,
             }}
           >
-            第 {folderData.page || page} 页
+            {t('email.page')} {folderData.page || page}
           </div>
           <button
             onClick={() => onPageChange(page + 1)}
@@ -427,7 +430,7 @@ const handleAddToCalendar = async (proposal, idx) => {
               cursor: folderData.has_next_page ? 'pointer' : 'not-allowed',
             }}
           >
-            下一页
+            {t('email.nextPage')}
           </button>
         </div>
       </div>
@@ -502,7 +505,7 @@ const handleAddToCalendar = async (proposal, idx) => {
             </div>
           </>
         ) : (
-          <div style={{ padding: 16 }}>Select an email to view</div>
+          <div style={{ padding: 16 }}>{t('email.selectEmail')}</div>
         )}
       </div>
     </div>

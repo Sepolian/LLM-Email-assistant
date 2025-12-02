@@ -1,6 +1,7 @@
 const { useState, useEffect } = React;
 
 const ModernApp = ()=>{
+  const { t, lang, setLanguage, languages } = useTranslation();
   const [page, setPage] = useState(window.location.pathname);
   const [mailbox, setMailbox] = useState(null);
   const [emailPage, setEmailPage] = useState(1);
@@ -414,10 +415,10 @@ const ModernApp = ()=>{
     if (!isLoggedIn) {
         return (
             <div style={{textAlign:'center', padding: '40px 0'}}>
-                <h2>Please log in</h2>
-                <p>{error || "Log in with your Google account to continue."}</p>
+                <h2>{t('common.loginPrompt')}</h2>
+                <p>{error || t('common.loginDesc')}</p>
                 <a href="/login">
-                    <button style={{background:'#2563eb',color:'#fff',padding:'10px 20px',borderRadius:8,border:0,cursor:'pointer'}}>Login with Google</button>
+                    <button style={{background:'#2563eb',color:'#fff',padding:'10px 20px',borderRadius:8,border:0,cursor:'pointer'}}>{t('common.loginWithGoogle')}</button>
                 </a>
             </div>
         );
@@ -476,20 +477,27 @@ const ModernApp = ()=>{
           <div style={{fontWeight:700,color:'#0f172a'}}>MailFlow</div>
         </div>
         {isLoggedIn && (<div style={{display:'flex',gap:6}}>
-          <a href="/" onClick={(e) => { e.preventDefault(); navigate('/'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>概览</a>
-          <a href="/email" onClick={(e) => { e.preventDefault(); navigate('/email'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/email' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>邮件</a>
-          <a href="/calendar" onClick={(e) => { e.preventDefault(); navigate('/calendar'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/calendar' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>日历</a>
+          <a href="/" onClick={(e) => { e.preventDefault(); navigate('/'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.overview')}</a>
+          <a href="/email" onClick={(e) => { e.preventDefault(); navigate('/email'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/email' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.email')}</a>
+          <a href="/calendar" onClick={(e) => { e.preventDefault(); navigate('/calendar'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/calendar' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.calendar')}</a>
         </div>)}
         <div style={{display:'flex',gap:8, alignItems: 'center'}}>
+          <select 
+            value={lang} 
+            onChange={(e) => setLanguage(e.target.value)}
+            style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',cursor:'pointer',fontSize:13}}
+          >
+            {languages.map(l => <option key={l.code} value={l.code}>{l.name}</option>)}
+          </select>
           {isLoggedIn ? (
             <>
-              <a href="/settings" onClick={(e) => { e.preventDefault(); navigate('/settings'); }} style={{padding:8,borderRadius:8, textDecoration: 'none', color: 'inherit'}}>设置</a>
+              <a href="/settings" onClick={(e) => { e.preventDefault(); navigate('/settings'); }} style={{padding:8,borderRadius:8, textDecoration: 'none', color: 'inherit'}}>{t('nav.settings')}</a>
               {user && <div style={{fontWeight:600}}>{user.name}</div>}
-              <button onClick={handleLogout} style={{padding:8,borderRadius:8}}>Logout</button>
+              <button onClick={handleLogout} style={{padding:8,borderRadius:8}}>{t('nav.logout')}</button>
             </>
           ) : (
             <a href="/login">
-              <button style={{padding:'8px 12px',borderRadius:8, background:'#2563eb', color: '#fff', border:0}}>Login</button>
+              <button style={{padding:'8px 12px',borderRadius:8, background:'#2563eb', color: '#fff', border:0}}>{t('nav.login')}</button>
             </a>
           )}
         </div>
