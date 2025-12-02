@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Lock
+from threading import RLock  # Changed from Lock to RLock
 from typing import Any, Dict, List, Optional
 import uuid
 
@@ -33,7 +33,7 @@ class RuleManager:
     def __init__(self, storage_path: Path, default_enabled: bool = False) -> None:
         self.storage_path = storage_path
         self.default_enabled = default_enabled
-        self._lock = Lock()
+        self._lock = RLock()  # Changed from Lock() to RLock()
         self._state: Dict[str, Any] = self._load()
 
     def _load(self) -> Dict[str, Any]:
@@ -113,7 +113,7 @@ class ProcessedEmailStore:
         self.storage_path = storage_path
         self.max_age_days = max_age_days
         self.max_entries = max_entries
-        self._lock = Lock()
+        self._lock = RLock()  # Changed from Lock() to RLock()
         self._state = self._load()
 
     def _load(self) -> Dict[str, str]:
