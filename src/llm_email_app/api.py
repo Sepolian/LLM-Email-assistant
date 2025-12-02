@@ -34,7 +34,9 @@ TMP_DIR = (BASE_DIR / 'tmp')
 TMP_DIR.mkdir(parents=True, exist_ok=True)
 EMAIL_CACHE_PATH = TMP_DIR / 'emails_recent.json'
 CALENDAR_CACHE_PATH = TMP_DIR / 'calendar_recent.json'
+AUTOMATION_LOGS_PATH = TMP_DIR / 'automation_logs.json'
 MESSAGE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{6,256}$")
+LOG_RETENTION_DAYS = 7
 
 RULE_MANAGER = RuleManager(settings.AUTO_LABEL_RULES_PATH, settings.AUTO_LABEL_ENABLED_DEFAULT)
 PROCESSED_STORE = ProcessedEmailStore(settings.AUTO_LABEL_PROCESSED_PATH)
@@ -205,6 +207,45 @@ def _automation_status_snapshot() -> Dict[str, Any]:
         return snapshot
 
 
+def _load_persisted_logs() -> List[Dict[str, Any]]:
+    """Load logs from persistent storage, filtering out entries older than LOG_RETENTION_DAYS."""
+    try:
+        if not AUTOMATION_LOGS_PATH.exists():
+            return []
+        payload = json.loads(AUTOMATION_LOGS_PATH.read_text(encoding='utf-8'))
+        logs = payload.get('logs', [])
+        cutoff = datetime.now(timezone.utc) - timedelta(days=LOG_RETENTION_DAYS)
+        filtered = []
+        for log in logs:
+            ts = _coerce_datetime(log.get('timestamp'))
+            if ts and ts >= cutoff:
+                filtered.append(log)
+        return filtered
+    except Exception as exc:
+        logger.warning('Unable to load persisted logs: %s', exc)
+        return []
+
+
+def _persist_logs(logs: List[Dict[str, Any]]) -> None:
+    """Save logs to persistent storage, keeping only last LOG_RETENTION_DAYS."""
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=LOG_RETENTION_DAYS)
+        filtered = []
+        for log in logs:
+            ts = _coerce_datetime(log.get('timestamp'))
+            if ts and ts >= cutoff:
+                filtered.append(log)
+        payload = {
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+            'retention_days': LOG_RETENTION_DAYS,
+            'count': len(filtered),
+            'logs': filtered,
+        }
+        _write_temp_json(AUTOMATION_LOGS_PATH, payload)
+    except Exception as exc:
+        logger.warning('Unable to persist logs: %s', exc)
+
+
 def _append_automation_log(message: str, level: str = 'info') -> None:
     entry = {
         'id': uuid.uuid4().hex,
@@ -213,10 +254,13 @@ def _append_automation_log(message: str, level: str = 'info') -> None:
         'message': message,
     }
     with AUTOMATION_STATUS_LOCK:
-        logs = AUTOMATION_STATUS.setdefault('logs', [])
+        # Load existing persisted logs and append new entry
+        logs = _load_persisted_logs()
         logs.append(entry)
-        if len(logs) > AUTOMATION_LOG_MAX:
-            del logs[:-AUTOMATION_LOG_MAX]
+        # Keep in-memory copy for status snapshot
+        AUTOMATION_STATUS['logs'] = logs[-AUTOMATION_LOG_MAX:]
+        # Persist all logs (within retention period)
+        _persist_logs(logs)
 
 
 def _reset_processed_email_cache(reason: str) -> None:
@@ -420,6 +464,11 @@ app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 
 @app.on_event('startup')
 async def _startup_background_workers() -> None:
+    # Initialize in-memory logs from persisted file
+    with AUTOMATION_STATUS_LOCK:
+        persisted = _load_persisted_logs()
+        AUTOMATION_STATUS['logs'] = persisted[-AUTOMATION_LOG_MAX:]
+    
     stop_event = asyncio.Event()
     app.state.refresh_stop_event = stop_event
     app.state.refresh_task = asyncio.create_task(_background_refresh_loop(stop_event))
@@ -516,6 +565,28 @@ def get_automation_status(request: Request):
         'rule_count': len(rules_state['rules']),
     })
     return status
+
+
+@app.get('/automation/logs', response_model=Dict[str, Any])
+def get_automation_logs(request: Request, days: int = 7, limit: int = 100):
+    """Get automation logs from the last N days (default 7, max LOG_RETENTION_DAYS)."""
+    _require_credentials(request)
+    days = min(max(1, days), LOG_RETENTION_DAYS)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    all_logs = _load_persisted_logs()
+    filtered = [
+        log for log in all_logs
+        if _coerce_datetime(log.get('timestamp')) and _coerce_datetime(log.get('timestamp')) >= cutoff
+    ]
+    # Sort by timestamp descending (most recent first)
+    filtered.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    capped = filtered[:max(1, min(limit, 500))]
+    return {
+        'logs': capped,
+        'total': len(filtered),
+        'retention_days': LOG_RETENTION_DAYS,
+        'query_days': days,
+    }
 
 
 @app.get('/automation/rules', response_model=Dict[str, Any])
