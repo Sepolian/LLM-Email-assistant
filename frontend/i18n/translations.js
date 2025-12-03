@@ -63,6 +63,12 @@ const translations = {
       adding: 'Adding...',
       added: 'Added ✓',
       failed: 'Failed ✗',
+      draftReply: 'Draft Reply',
+      subject: 'Subject',
+      body: 'Body',
+      addToDraft: 'Add to Draft',
+      draftSaved: 'Saved to Drafts ✓',
+      draftError: 'Failed to Save',
     },
     // Calendar page
     calendar: {
@@ -234,6 +240,12 @@ const translations = {
       adding: '添加中...',
       added: '已添加 ✓',
       failed: '失败 ✗',
+      draftReply: '草稿回复',
+      subject: '主题',
+      body: '正文',
+      addToDraft: '添加到草稿箱',
+      draftSaved: '已保存到草稿箱 ✓',
+      draftError: '保存失败',
     },
     // Calendar page
     calendar: {

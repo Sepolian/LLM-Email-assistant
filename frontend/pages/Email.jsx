@@ -204,12 +204,18 @@ function EmailView({
   const [summarizing, setSummarizing] = useState(false);
   const [proposals, setProposals] = useState([]);
   const [proposalStatuses, setProposalStatuses] = useState({});
+  const [draftReply, setDraftReply] = useState(null);
+  const [draftReplyStatus, setDraftReplyStatus] = useState(null);
+  const [editedDraftBody, setEditedDraftBody] = useState('');
 
   useEffect(() => {
     setViewingEmail(selectedEmail || null);
     setSummary(null);
     setSummarizing(false);
     setProposals([]);
+    setDraftReply(null);
+    setDraftReplyStatus(null);
+    setEditedDraftBody('');
   }, [selectedEmail]);
 
   const handleSummarize = async () => {
@@ -218,6 +224,9 @@ function EmailView({
     setSummarizing(true);
     setSummary(null);
     setProposals([]);
+    setDraftReply(null);
+    setDraftReplyStatus(null);
+    setEditedDraftBody('');
     try {
       const res = await fetch(`/api/emails/${encodeURIComponent(currentEmailId)}/summarize`, {
         method: 'POST',
@@ -227,6 +236,10 @@ function EmailView({
       if (latestViewingIdRef.current === currentEmailId) {
         setSummary(data.summary || "");
         setProposals(data.proposals || []);
+        if (data.draft_reply) {
+          setDraftReply(data.draft_reply);
+          setEditedDraftBody(data.draft_reply.body || '');
+        }
       }
     } catch (err) {
       if (latestViewingIdRef.current === currentEmailId) {
@@ -498,6 +511,98 @@ const handleAddToCalendar = async (proposal, idx) => {
                       </button>
                     </div>
                   ))}
+                </div>
+              )}
+              {draftReply && (
+                <div style={{ marginTop: 16 }}>
+                  <h3>{t('email.draftReply')}</h3>
+                  <div style={{ border: '1px solid #ddd', padding: 12, borderRadius: 6 }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <label style={{ fontWeight: 500, fontSize: 13, color: '#374151' }}>{t('email.subject')}:</label>
+                      <div style={{ 
+                        padding: '8px 12px', 
+                        background: '#f3f4f6', 
+                        borderRadius: 4, 
+                        marginTop: 4,
+                        fontSize: 14 
+                      }}>
+                        {draftReply.subject}
+                      </div>
+                    </div>
+                    <div style={{ marginBottom: 12 }}>
+                      <label style={{ fontWeight: 500, fontSize: 13, color: '#374151' }}>{t('email.body')}:</label>
+                      <textarea
+                        value={editedDraftBody}
+                        onChange={(e) => setEditedDraftBody(e.target.value)}
+                        style={{
+                          width: '100%',
+                          minHeight: 150,
+                          padding: '8px 12px',
+                          background: '#f3f4f6',
+                          border: 'none',
+                          borderRadius: 4,
+                          marginTop: 4,
+                          fontSize: 14,
+                          fontFamily: 'inherit',
+                          resize: 'vertical',
+                          lineHeight: 1.5,
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={async () => {
+                          if (draftReplyStatus === 'saving') return;
+                          setDraftReplyStatus('saving');
+                          try {
+                            const res = await fetch('/emails/drafts', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({
+                                to: viewingEmail?.from || '',
+                                subject: draftReply.subject,
+                                body: editedDraftBody,
+                                reply_to_message_id: viewingEmail?.id,
+                              }),
+                            });
+                            if (res.ok) {
+                              setDraftReplyStatus('saved');
+                              setTimeout(() => {
+                                setDraftReply(null);
+                                setEditedDraftBody('');
+                                setDraftReplyStatus(null);
+                              }, 1500);
+                            } else {
+                              setDraftReplyStatus('error');
+                              setTimeout(() => setDraftReplyStatus(null), 2000);
+                            }
+                          } catch (err) {
+                            setDraftReplyStatus('error');
+                            setTimeout(() => setDraftReplyStatus(null), 2000);
+                          }
+                        }}
+                        disabled={draftReplyStatus === 'saving' || draftReplyStatus === 'saved'}
+                        style={{
+                          padding: '6px 12px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
+                          background: draftReplyStatus === 'saved' ? '#22c55e' : draftReplyStatus === 'error' ? '#ef4444' : '#1f6feb',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 4,
+                          cursor: draftReplyStatus === 'saving' || draftReplyStatus === 'saved' ? 'not-allowed' : 'pointer',
+                          fontSize: 13,
+                        }}
+                      >
+                        {draftReplyStatus === 'saving' && <Spinner />}
+                        {draftReplyStatus === 'saved' ? t('email.draftSaved') : 
+                         draftReplyStatus === 'error' ? t('email.draftError') : 
+                         t('email.addToDraft')}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

@@ -632,3 +632,75 @@ class GmailClient:
         except HttpError as e:
             logger.exception("Failed to fetch Gmail message %s: %s", message_id, e)
             return None
+
+    def create_draft(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        reply_to_message_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Create a draft email in the user's Gmail Drafts folder.
+
+        Args:
+            to: Recipient email address
+            subject: Email subject line
+            body: Email body content (plain text)
+            reply_to_message_id: Optional message ID if this draft is a reply
+
+        Returns:
+            Dict with draft info including id, or None on failure
+        """
+        if self.service is None:
+            logger.warning('Gmail service not available; returning stub draft')
+            return {
+                'id': f'stub-draft-{datetime.now(timezone.utc).timestamp()}',
+                'message': {'id': 'stub-message-id'},
+            }
+
+        try:
+            from email.mime.text import MIMEText
+
+            # Create the email message
+            message = MIMEText(body, 'plain', 'utf-8')
+            message['to'] = to
+            message['subject'] = subject
+
+            # If replying, add threading headers
+            if reply_to_message_id:
+                try:
+                    original = self.service.users().messages().get(
+                        userId='me', id=reply_to_message_id, format='metadata',
+                        metadataHeaders=['Message-ID', 'References', 'In-Reply-To']
+                    ).execute()
+                    headers = {h['name']: h['value'] for h in original.get('payload', {}).get('headers', [])}
+                    original_msg_id = headers.get('Message-ID', '')
+                    references = headers.get('References', '')
+                    if original_msg_id:
+                        message['In-Reply-To'] = original_msg_id
+                        message['References'] = f"{references} {original_msg_id}".strip()
+                except Exception as e:
+                    logger.warning('Could not fetch original message headers for reply: %s', e)
+
+            # Encode the message
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+
+            # Create the draft
+            draft_body: Dict[str, Any] = {'message': {'raw': raw}}
+            if reply_to_message_id:
+                draft_body['message']['threadId'] = reply_to_message_id
+
+            draft = self.service.users().drafts().create(
+                userId='me',
+                body=draft_body
+            ).execute()
+
+            logger.info('Created draft with ID: %s', draft.get('id'))
+            return draft
+
+        except HttpError as e:
+            logger.exception('Failed to create draft: %s', e)
+            return None
+        except Exception as e:
+            logger.exception('Unexpected error creating draft: %s', e)
+            return None

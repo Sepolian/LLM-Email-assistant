@@ -1120,6 +1120,39 @@ def mark_email_as_read(message_id: str, read: bool = True, gmail_client: GmailCl
 def archive_email(message_id: str, gmail_client: GmailClient = Depends(get_gmail_client)):
     return {"success": gmail_client.archive_email(message_id=message_id)}
 
+@app.post("/emails/drafts")
+def create_draft(
+    draft_data: Dict[str, Any],
+    gmail_client: GmailClient = Depends(get_gmail_client)
+):
+    """Create a draft email in the user's Gmail Drafts folder.
+    
+    Expected draft_data fields:
+    - to: recipient email address
+    - subject: email subject
+    - body: email body text
+    - reply_to_message_id: (optional) original message ID if replying
+    """
+    to = draft_data.get('to', '')
+    subject = draft_data.get('subject', '')
+    body = draft_data.get('body', '')
+    reply_to_message_id = draft_data.get('reply_to_message_id')
+    
+    if not to or not subject:
+        raise HTTPException(status_code=400, detail="Missing required fields: to and subject")
+    
+    result = gmail_client.create_draft(
+        to=to,
+        subject=subject,
+        body=body,
+        reply_to_message_id=reply_to_message_id
+    )
+    
+    if result is None:
+        raise HTTPException(status_code=500, detail="Failed to create draft")
+    
+    return {"success": True, "draft_id": result.get('id')}
+
 @app.get("/calendar/events", response_model=List[Dict[str, Any]])
 def get_calendar_events(
     gcal_client: GCalClient = Depends(get_gcal_client),
@@ -1289,7 +1322,8 @@ def summarize_email(message_id: str, gmail_client: GmailClient = Depends(get_gma
         )
         return JSONResponse({
             "summary": result.get("text", ""),
-            "proposals": result.get("proposals", [])
+            "proposals": result.get("proposals", []),
+            "draft_reply": result.get("draft_reply")
         })
     except Exception as exc:
         logger.exception("Summarization failed: %s", exc)
