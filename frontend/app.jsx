@@ -430,6 +430,7 @@ const ModernApp = ()=>{
       case '/email': activeTab = 'email'; break;
       case '/calendar': activeTab = 'calendar'; break;
       case '/settings': activeTab = 'settings'; break;
+      case '/chat': activeTab = 'chat'; break;
       default: activeTab = 'home';
     }
 
@@ -465,6 +466,7 @@ const ModernApp = ()=>{
         />
       );
       case 'settings': return <SettingsView user={user} onAutomationActivity={handleAutomationActivity} />;
+      case 'chat': return <ChatView />;
       default: return <HomeView />;
     }
   }
@@ -480,6 +482,7 @@ const ModernApp = ()=>{
           <a href="/" onClick={(e) => { e.preventDefault(); navigate('/'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.overview')}</a>
           <a href="/email" onClick={(e) => { e.preventDefault(); navigate('/email'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/email' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.email')}</a>
           <a href="/calendar" onClick={(e) => { e.preventDefault(); navigate('/calendar'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/calendar' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.calendar')}</a>
+          <a href="/chat" onClick={(e) => { e.preventDefault(); navigate('/chat'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/chat' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.chat')}</a>
         </div>)}
         <div style={{display:'flex',gap:8, alignItems: 'center'}}>
           <select 

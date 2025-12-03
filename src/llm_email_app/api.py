@@ -27,6 +27,7 @@ import json
 
 from llm_email_app.llm.openai_client import OpenAIClient
 from llm_email_app.email.rules import RuleManager, ProcessedEmailStore
+from llm_email_app.mcp.calendar_server import MCPCalendarServer, MCPChatHandler
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,23 @@ AUTOMATION_STATUS: Dict[str, Any] = {
     'logs': [],
 }
 LLM_CLIENT = OpenAIClient()
+
+# MCP Chat handlers storage (per-session)
+MCP_CHAT_HANDLERS: Dict[str, MCPChatHandler] = {}
+
+
+def _get_mcp_chat_handler(session_id: str, gcal_client: GCalClient) -> MCPChatHandler:
+    """Get or create an MCP chat handler for a session."""
+    if session_id not in MCP_CHAT_HANDLERS:
+        mcp_server = MCPCalendarServer(gcal_client=gcal_client)
+        MCP_CHAT_HANDLERS[session_id] = MCPChatHandler(
+            llm_client=LLM_CLIENT,
+            mcp_server=mcp_server
+        )
+    else:
+        # Update the gcal_client in case credentials changed
+        MCP_CHAT_HANDLERS[session_id].mcp_server.gcal_client = gcal_client
+    return MCP_CHAT_HANDLERS[session_id]
 
 
 def _coerce_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -744,7 +762,7 @@ if FRONTEND_DIR.exists():
 # use absolute path when returning index.html
 INDEX_HTML = FRONTEND_DIR / "index.html"
 
-SPA_ROUTES = {"calendar", "email", "settings"}
+SPA_ROUTES = {"calendar", "email", "settings", "chat"}
 
 app.add_route("/login", route=login, methods=["GET"])
 app.add_route("/auth/callback", route=auth_callback, methods=["GET"])
@@ -1182,6 +1200,66 @@ def serve_spa_routes(spa_path: str):
 @app.get("/{spa_path}/", include_in_schema=False)
 def serve_spa_routes_with_slash(spa_path: str):
     return serve_spa_routes(spa_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MCP Chat API endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post('/chat', response_model=Dict[str, Any])
+async def chat_with_assistant(
+    payload: Dict[str, str],
+    request: Request,
+    gcal_client: GCalClient = Depends(get_gcal_client),
+):
+    """Send a message to the calendar assistant and get a response.
+    
+    The assistant can create, update, delete, and list calendar events
+    based on natural language input.
+    """
+    _require_credentials(request)
+    
+    message = payload.get('message', '').strip()
+    if not message:
+        raise HTTPException(status_code=400, detail='Message is required')
+    
+    # Get session ID for conversation tracking
+    session_id = request.session.get('session_id')
+    if not session_id:
+        import uuid
+        session_id = str(uuid.uuid4())
+        request.session['session_id'] = session_id
+    
+    # Get chat handler
+    handler = _get_mcp_chat_handler(session_id, gcal_client)
+    
+    # Process the message
+    result = await handler.chat(message)
+    
+    return result
+
+
+@app.post('/chat/reset', response_model=Dict[str, bool])
+async def reset_chat(request: Request):
+    """Reset the chat conversation history."""
+    _require_credentials(request)
+    
+    session_id = request.session.get('session_id')
+    if session_id and session_id in MCP_CHAT_HANDLERS:
+        MCP_CHAT_HANDLERS[session_id].reset_conversation()
+    
+    return {'success': True}
+
+
+@app.get('/chat/tools', response_model=List[Dict[str, Any]])
+async def get_available_tools(request: Request):
+    """Get the list of available MCP tools."""
+    _require_credentials(request)
+    
+    # Create a temporary MCP server to get tool definitions
+    mcp_server = MCPCalendarServer()
+    return mcp_server.get_tools()
+
 
 @app.post("/api/emails/{message_id}/summarize")
 def summarize_email(message_id: str, gmail_client: GmailClient = Depends(get_gmail_client)):

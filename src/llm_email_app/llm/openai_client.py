@@ -276,6 +276,90 @@ class OpenAIClient:
             # On API error, raise to let caller decide; include message for debugging
             raise RuntimeError(f"OpenAI-format API call failed: {e}")
 
+    def _chat_completion_with_tools(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]],
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+    ) -> Dict[str, Any]:
+        """Make a chat completion call with tool definitions.
+        
+        Args:
+            messages: The conversation messages
+            tools: The tool definitions for function calling
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens in response
+            
+        Returns:
+            Dictionary with 'content' and optional 'tool_calls'
+        """
+        if not self.model:
+            raise RuntimeError('Model id must be provided via OPENAI_MODEL or constructor argument')
+        
+        if self._use_requests:
+            if not self.api_key or not self.model:
+                raise RuntimeError('API key and model are required when OPENAI_API_BASE is set')
+            
+            url = self.api_base.rstrip('/') + '/v1/chat/completions'
+            headers = {
+                'Authorization': f'Bearer {self.api_key}',
+                'Content-Type': 'application/json'
+            }
+            payload = {
+                'model': self.model,
+                'messages': messages,
+                'temperature': temperature,
+                'max_tokens': max_tokens,
+                'tools': tools,
+                'tool_choice': 'auto'
+            }
+            
+            r = requests.post(url, headers=headers, json=payload, timeout=60)
+            r.raise_for_status()
+            resp = r.json()
+            
+            choice = resp.get('choices', [{}])[0]
+            message = choice.get('message', {})
+            
+            return {
+                'content': message.get('content', ''),
+                'tool_calls': message.get('tool_calls', [])
+            }
+        
+        # Use openai SDK
+        if self._client is None:
+            raise RuntimeError('OpenAI client not initialized')
+        
+        response = self._client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice='auto'
+        )
+        
+        choice = response.choices[0]
+        message = choice.message
+        
+        tool_calls = []
+        if message.tool_calls:
+            for tc in message.tool_calls:
+                tool_calls.append({
+                    'id': tc.id,
+                    'type': tc.type,
+                    'function': {
+                        'name': tc.function.name,
+                        'arguments': tc.function.arguments
+                    }
+                })
+        
+        return {
+            'content': message.content or '',
+            'tool_calls': tool_calls
+        }
+
     def evaluate_label_rules(
         self,
         email_body: str,
