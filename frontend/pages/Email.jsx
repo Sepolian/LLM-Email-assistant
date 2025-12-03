@@ -88,7 +88,6 @@ const EmailDetailView = ({ email, onBack }) => {
           dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
           style={{
             overflowY: 'auto',
-            minHeight: '60vh',
             maxHeight: '60vh',
             minWidth: '620px',
             maxWidth: '620px',
@@ -101,7 +100,6 @@ const EmailDetailView = ({ email, onBack }) => {
             whiteSpace: 'pre-wrap',
             marginBottom: 16,
             overflowY: 'auto',
-            minHeight: '60vh',
             maxHeight: '60vh',
             minWidth: '620px',
             maxWidth: '620px',
