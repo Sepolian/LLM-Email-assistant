@@ -143,9 +143,21 @@ function EmailView({
     }, []);
   }, [mailbox]);
 
+  // Gmail system labels to exclude from custom labels section
+  const SYSTEM_LABELS = new Set([
+    'INBOX', 'SENT', 'DRAFT', 'DRAFTS', 'TRASH', 'SPAM', 'STARRED', 'UNREAD', 'IMPORTANT',
+    'CATEGORY_PERSONAL', 'CATEGORY_SOCIAL', 'CATEGORY_PROMOTIONS', 'CATEGORY_UPDATES', 'CATEGORY_FORUMS',
+    'CHAT', 'OPENED', 'ARCHIVED',
+  ]);
+
   const availableLabels = useMemo(() => {
     const set = new Set();
-    allEmails.forEach((item) => (item.labels || []).forEach((lbl) => set.add(lbl)));
+    allEmails.forEach((item) => (item.labels || []).forEach((lbl) => {
+      // Only add non-system labels (user-created custom labels)
+      if (!SYSTEM_LABELS.has(lbl.toUpperCase())) {
+        set.add(lbl);
+      }
+    }));
     return Array.from(set);
   }, [allEmails]);
 
