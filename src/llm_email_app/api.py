@@ -28,6 +28,7 @@ import json
 from llm_email_app.llm.openai_client import OpenAIClient
 from llm_email_app.email.rules import RuleManager, ProcessedEmailStore
 from llm_email_app.mcp.calendar_server import MCPCalendarServer, MCPChatHandler
+from llm_email_app.mcp.email_server import MCPEmailServer
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +63,24 @@ LLM_CLIENT = OpenAIClient()
 MCP_CHAT_HANDLERS: Dict[str, MCPChatHandler] = {}
 
 
-def _get_mcp_chat_handler(session_id: str, gcal_client: GCalClient) -> MCPChatHandler:
+def _get_mcp_chat_handler(session_id: str, gcal_client: GCalClient, gmail_client: GmailClient = None) -> MCPChatHandler:
     """Get or create an MCP chat handler for a session."""
     if session_id not in MCP_CHAT_HANDLERS:
         mcp_server = MCPCalendarServer(gcal_client=gcal_client)
+        email_server = MCPEmailServer(
+            gmail_client=gmail_client,
+            email_cache_loader=_load_cached_recent_emails
+        )
         MCP_CHAT_HANDLERS[session_id] = MCPChatHandler(
             llm_client=LLM_CLIENT,
-            mcp_server=mcp_server
+            mcp_server=mcp_server,
+            email_server=email_server
         )
     else:
-        # Update the gcal_client in case credentials changed
+        # Update the clients in case credentials changed
         MCP_CHAT_HANDLERS[session_id].mcp_server.gcal_client = gcal_client
+        if MCP_CHAT_HANDLERS[session_id].email_server:
+            MCP_CHAT_HANDLERS[session_id].email_server.gmail_client = gmail_client
     return MCP_CHAT_HANDLERS[session_id]
 
 
@@ -696,7 +704,8 @@ def _run_background_cycle() -> None:
     gcal_client = GCalClient(creds=creds)
 
     try:
-        mailbox = gmail_client.fetch_mailbox_overview(active_folder='inbox', page=1, per_page=20, days=14)
+        # Fetch more emails for better cache coverage (50 per folder = up to 200 total)
+        mailbox = gmail_client.fetch_mailbox_overview(active_folder='inbox', page=1, per_page=50, days=14)
         _persist_recent_emails(mailbox, window_days=14)
     except Exception as exc:
         logger.warning('Background email refresh failed: %s', exc)
@@ -1244,11 +1253,12 @@ async def chat_with_assistant(
     payload: Dict[str, str],
     request: Request,
     gcal_client: GCalClient = Depends(get_gcal_client),
+    gmail_client: GmailClient = Depends(get_gmail_client),
 ):
     """Send a message to the calendar assistant and get a response.
     
-    The assistant can create, update, delete, and list calendar events
-    based on natural language input.
+    The assistant can create, update, delete, and list calendar events,
+    as well as search, read, and draft emails based on natural language input.
     """
     _require_credentials(request)
     
@@ -1263,8 +1273,8 @@ async def chat_with_assistant(
         session_id = str(uuid.uuid4())
         request.session['session_id'] = session_id
     
-    # Get chat handler
-    handler = _get_mcp_chat_handler(session_id, gcal_client)
+    # Get chat handler with both calendar and email support
+    handler = _get_mcp_chat_handler(session_id, gcal_client, gmail_client)
     
     # Process the message
     result = await handler.chat(message)
@@ -1286,12 +1296,13 @@ async def reset_chat(request: Request):
 
 @app.get('/chat/tools', response_model=List[Dict[str, Any]])
 async def get_available_tools(request: Request):
-    """Get the list of available MCP tools."""
+    """Get the list of available MCP tools (calendar and email)."""
     _require_credentials(request)
     
-    # Create a temporary MCP server to get tool definitions
-    mcp_server = MCPCalendarServer()
-    return mcp_server.get_tools()
+    # Create temporary servers to get tool definitions
+    calendar_server = MCPCalendarServer()
+    email_server = MCPEmailServer()
+    return calendar_server.get_tools() + email_server.get_tools()
 
 
 @app.post("/api/emails/{message_id}/summarize")

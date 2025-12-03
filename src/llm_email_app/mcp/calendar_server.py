@@ -381,15 +381,17 @@ class MCPCalendarServer:
 class MCPChatHandler:
     """Handles chat interactions with MCP tool calling."""
     
-    def __init__(self, llm_client, mcp_server: MCPCalendarServer):
+    def __init__(self, llm_client, mcp_server: MCPCalendarServer, email_server=None):
         """Initialize the chat handler.
         
         Args:
             llm_client: An instance of OpenAIClient for LLM interactions
             mcp_server: An instance of MCPCalendarServer for tool execution
+            email_server: An optional MCPEmailServer for email tool execution
         """
         self.llm_client = llm_client
         self.mcp_server = mcp_server
+        self.email_server = email_server
         self.conversation_history: List[Dict[str, str]] = []
     
     def _get_system_prompt(self) -> str:
@@ -397,12 +399,13 @@ class MCPChatHandler:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
         current_year = datetime.now().year
         
-        return f"""You are a helpful calendar assistant. Your job is to help users manage their Google Calendar.
+        return f"""You are a helpful assistant that can manage both calendar and email operations.
 
 Current date and time: {current_time}
 Current year: {current_year}
 
-When users want to add events, extract the following information:
+CALENDAR CAPABILITIES:
+When users want to add calendar events, extract the following information:
 - Event title/name
 - Date (convert to YYYY-MM-DD format)
 - Start time (convert to 24-hour HH:MM format)
@@ -419,23 +422,53 @@ Time format notes:
 - Convert times like "2pm" to "14:00"
 - Convert times like "9:30am" to "09:30"
 
-Location abbreviations:
-- "SHB" = Shaw Building
-- Common building abbreviations should be expanded for clarity.
+EMAIL CAPABILITIES:
+You can help users with:
+- Searching for emails by sender, subject, or content
+- Reading the full content of specific emails
+- Listing recent emails in their inbox
+- Creating draft replies to emails
+- Composing new draft emails
+- Summarizing long emails
 
-Always confirm the event details with the user before creating it, unless they explicitly ask you to create it directly.
-After successfully creating an event, provide a summary of what was created.
+When searching emails:
+- Use specific search terms from the user's request
+- Filter by sender if they mention a person's name or email
+- Filter by subject if they mention specific topics
 
-You can also:
-- List upcoming events to check schedule
-- Update existing events
-- Delete events
+When drafting replies:
+- Keep the tone professional unless specified otherwise
+- Include relevant context from the original email
+- Be concise but complete
 
+Always confirm actions with the user before executing them.
+After successfully completing an action, provide a summary of what was done.
 Be concise and helpful in your responses."""
     
     def reset_conversation(self):
         """Reset the conversation history."""
         self.conversation_history = []
+    
+    def get_combined_tools(self) -> List[Dict[str, Any]]:
+        """Get tools from both calendar and email servers."""
+        tools = self.mcp_server.get_tools()
+        if self.email_server:
+            tools = tools + self.email_server.get_tools()
+        return tools
+    
+    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Execute a tool from either calendar or email server."""
+        # Calendar tools
+        calendar_tools = {"add_calendar_event", "list_calendar_events", "delete_calendar_event", "update_calendar_event"}
+        # Email tools
+        email_tools = {"search_emails", "read_email", "list_recent_emails", "draft_reply", "compose_draft", "summarize_email"}
+        
+        if tool_name in calendar_tools:
+            return self.mcp_server.execute_tool(tool_name, arguments)
+        elif tool_name in email_tools and self.email_server:
+            return self.email_server.execute_tool(tool_name, arguments)
+        else:
+            return {"success": False, "error": f"Unknown tool: {tool_name}"}
     
     async def chat(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return a response.
@@ -459,8 +492,8 @@ Be concise and helpful in your responses."""
             {"role": "system", "content": self._get_system_prompt()}
         ] + self.conversation_history
         
-        # Get tools
-        tools = self.mcp_server.get_tools()
+        # Get combined tools from both calendar and email servers
+        tools = self.get_combined_tools()
         
         try:
             # Call LLM with tools
@@ -473,8 +506,8 @@ Be concise and helpful in your responses."""
                     tool_name = tool_call["function"]["name"]
                     arguments = json.loads(tool_call["function"]["arguments"])
                     
-                    # Execute the tool
-                    result = self.mcp_server.execute_tool(tool_name, arguments)
+                    # Execute the tool using combined executor
+                    result = self.execute_tool(tool_name, arguments)
                     tool_results.append({
                         "tool_name": tool_name,
                         "arguments": arguments,
@@ -572,8 +605,74 @@ Be concise and helpful in your responses."""
         """
         user_lower = user_message.lower()
         
+        # Check for email-related intents first
+        email_keywords = ["email", "mail", "inbox", "message", "reply", "draft", "send"]
+        is_email_related = any(kw in user_lower for kw in email_keywords)
+        
+        if is_email_related:
+            # Search emails intent
+            if any(word in user_lower for word in ["search", "find", "look for", "show me"]):
+                # Extract search query
+                query = user_message.replace("search", "").replace("find", "").replace("emails", "").strip()
+                return {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "stub_call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_emails",
+                            "arguments": json.dumps({"query": query or "meeting", "max_results": 5})
+                        }
+                    }]
+                }
+            
+            # List emails intent
+            elif any(word in user_lower for word in ["list", "recent", "latest", "inbox"]):
+                return {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "stub_call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_recent_emails",
+                            "arguments": json.dumps({"max_results": 10})
+                        }
+                    }]
+                }
+            
+            # Read email intent
+            elif any(word in user_lower for word in ["read", "open", "show"]):
+                return {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "stub_call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_email",
+                            "arguments": json.dumps({"email_id": "stub-email-1"})
+                        }
+                    }]
+                }
+            
+            # Reply intent
+            elif any(word in user_lower for word in ["reply", "respond"]):
+                return {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "stub_call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "draft_reply",
+                            "arguments": json.dumps({
+                                "email_id": "stub-email-1",
+                                "body": "Thank you for your email. I will review and get back to you soon."
+                            })
+                        }
+                    }]
+                }
+        
         # Check for event creation intent
-        if any(word in user_lower for word in ["meeting", "schedule", "add", "create", "book"]):
+        if any(word in user_lower for word in ["meeting", "schedule", "add", "create", "book"]) and not is_email_related:
             # Extract date - look for patterns like "03/12", "march 12", etc.
             date = None
             date_match = re.search(r'(\d{1,2})[/\-](\d{1,2})', user_message)
@@ -626,8 +725,8 @@ Be concise and helpful in your responses."""
                 }]
             }
         
-        # Check for list events intent
-        elif any(word in user_lower for word in ["list", "show", "what", "schedule", "upcoming"]):
+        # Check for list events intent (calendar, not email)
+        elif any(word in user_lower for word in ["list", "show", "what", "schedule", "upcoming"]) and not is_email_related:
             return {
                 "content": "",
                 "tool_calls": [{
@@ -642,6 +741,6 @@ Be concise and helpful in your responses."""
         
         # Default response
         return {
-            "content": "I can help you manage your calendar. You can ask me to:\n- Add events (e.g., 'Schedule a meeting on 03/12 at 2pm in SHB')\n- List upcoming events\n- Update or delete events\n\nWhat would you like to do?",
+            "content": "I can help you manage your calendar and emails. You can ask me to:\n\n**Calendar:**\n- Add events (e.g., 'Schedule a meeting on 03/12 at 2pm in SHB')\n- List upcoming events\n- Update or delete events\n\n**Email:**\n- Search emails (e.g., 'Find emails from John about the project')\n- List recent emails\n- Read specific emails\n- Draft replies\n\nWhat would you like to do?",
             "tool_calls": []
         }

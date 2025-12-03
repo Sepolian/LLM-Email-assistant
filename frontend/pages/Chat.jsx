@@ -1,13 +1,40 @@
 const { useState, useRef, useEffect } = React;
 
+const CHAT_STORAGE_KEY = 'llm_email_chat_history';
+
 const ChatView = () => {
   const { t } = useTranslation();
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => {
+    // Load from localStorage on init
+    try {
+      const saved = localStorage.getItem(CHAT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to load chat history:', e);
+    }
+    return [];
+  });
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
+
+  // Save to localStorage whenever messages change
+  useEffect(() => {
+    try {
+      if (messages.length > 0) {
+        localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(messages));
+      }
+    } catch (e) {
+      console.warn('Failed to save chat history:', e);
+    }
+  }, [messages]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -18,12 +45,14 @@ const ChatView = () => {
   }, [messages]);
 
   useEffect(() => {
-    // Add welcome message on mount
-    setMessages([{
-      role: 'assistant',
-      content: t('chat.welcomeMessage'),
-      timestamp: new Date().toISOString()
-    }]);
+    // Add welcome message on mount only if no saved messages
+    if (messages.length === 0) {
+      setMessages([{
+        role: 'assistant',
+        content: t('chat.welcomeMessage'),
+        timestamp: new Date().toISOString()
+      }]);
+    }
   }, []);
 
   const handleSubmit = async (e) => {
@@ -81,11 +110,14 @@ const ChatView = () => {
   const handleReset = async () => {
     try {
       await fetch('/chat/reset', { method: 'POST' });
-      setMessages([{
+      const newMessages = [{
         role: 'assistant',
         content: t('chat.welcomeMessage'),
         timestamp: new Date().toISOString()
-      }]);
+      }];
+      setMessages(newMessages);
+      // Clear localStorage
+      localStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(newMessages));
       setError(null);
     } catch (err) {
       setError('Failed to reset conversation');
@@ -103,6 +135,8 @@ const ChatView = () => {
 
     if (result.success) {
       const data = result.result;
+      
+      // Calendar: Event created
       if (tool_name === 'add_calendar_event' && data.event) {
         return (
           <div style={styles.toolResult}>
@@ -118,7 +152,9 @@ const ChatView = () => {
             </div>
           </div>
         );
-      } else if (tool_name === 'list_calendar_events' && data.events) {
+      } 
+      // Calendar: List events
+      else if (tool_name === 'list_calendar_events' && data.events) {
         return (
           <div style={styles.toolResult}>
             <div style={styles.toolResultIcon}>📅</div>
@@ -141,11 +177,119 @@ const ChatView = () => {
             </div>
           </div>
         );
-      } else if (tool_name === 'delete_calendar_event') {
+      } 
+      // Calendar: Delete event
+      else if (tool_name === 'delete_calendar_event') {
         return (
           <div style={styles.toolResult}>
             <div style={styles.toolResultIcon}>🗑️</div>
             <div style={styles.toolResultTitle}>{data.message}</div>
+          </div>
+        );
+      }
+      // Email: Search results
+      else if (tool_name === 'search_emails' && data.emails) {
+        return (
+          <div style={styles.toolResult}>
+            <div style={styles.toolResultIcon}>🔍</div>
+            <div>
+              <div style={styles.toolResultTitle}>{data.message}</div>
+              {data.emails.length > 0 ? (
+                <div style={styles.eventsList}>
+                  {data.emails.map((email, idx) => (
+                    <div key={idx} style={styles.emailItem}>
+                      <strong>{email.subject || t('email.noSubject')}</strong>
+                      <br />
+                      <span style={styles.emailMeta}>{t('email.from')}: {email.from}</span>
+                      {email.received && <span style={styles.emailMeta}> | {new Date(email.received).toLocaleString()}</span>}
+                      {email.snippet && <div style={styles.emailSnippet}>{email.snippet}</div>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={styles.noEvents}>{t('chat.noEmailsFound')}</div>
+              )}
+            </div>
+          </div>
+        );
+      }
+      // Email: List recent emails
+      else if (tool_name === 'list_recent_emails' && data.emails) {
+        return (
+          <div style={styles.toolResult}>
+            <div style={styles.toolResultIcon}>📧</div>
+            <div>
+              <div style={styles.toolResultTitle}>{data.message}</div>
+              {data.emails.length > 0 ? (
+                <div style={styles.eventsList}>
+                  {data.emails.map((email, idx) => (
+                    <div key={idx} style={{
+                      ...styles.emailItem,
+                      background: email.is_read ? '#fff' : '#eff6ff',
+                      borderLeft: email.is_read ? 'none' : '3px solid #3b82f6'
+                    }}>
+                      <strong style={{ fontWeight: email.is_read ? 400 : 600 }}>{email.subject || t('email.noSubject')}</strong>
+                      <br />
+                      <span style={styles.emailMeta}>{email.from}</span>
+                      {email.received && <span style={styles.emailMeta}> | {new Date(email.received).toLocaleString()}</span>}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={styles.noEvents}>{t('chat.noEmailsFound')}</div>
+              )}
+            </div>
+          </div>
+        );
+      }
+      // Email: Read email content
+      else if (tool_name === 'read_email' && (data.body || data.body_preview)) {
+        const bodyContent = data.body || data.body_preview || '';
+        return (
+          <div style={styles.toolResult}>
+            <div style={styles.toolResultIcon}>📖</div>
+            <div style={{ width: '100%' }}>
+              <div style={styles.toolResultTitle}>{t('chat.emailContent')}</div>
+              <div style={styles.toolResultDetail}>
+                <div><strong>{t('email.subject')}:</strong> {data.subject}</div>
+                <div><strong>{t('email.from')}:</strong> {data.from}</div>
+                {data.received && <div style={{ fontSize: 12, color: '#9ca3af' }}>{new Date(data.received).toLocaleString()}</div>}
+              </div>
+              <div style={styles.emailBodyPreview}>
+                {bodyContent.length > 500 ? bodyContent.substring(0, 500) + '...' : bodyContent}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      // Email: Summarize email
+      else if (tool_name === 'summarize_email' && data.body_preview) {
+        return (
+          <div style={styles.toolResult}>
+            <div style={styles.toolResultIcon}>📝</div>
+            <div>
+              <div style={styles.toolResultTitle}>{t('chat.emailToSummarize')}</div>
+              <div style={styles.toolResultDetail}>
+                <div><strong>{data.subject}</strong></div>
+                <div style={{ fontSize: 12, color: '#6b7280' }}>{t('email.from')}: {data.from}</div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+      // Email: Draft created
+      else if ((tool_name === 'draft_reply' || tool_name === 'compose_draft') && data.draft_id) {
+        return (
+          <div style={styles.toolResult}>
+            <div style={styles.toolResultIcon}>✉️</div>
+            <div>
+              <div style={styles.toolResultTitle}>{t('chat.draftCreated')}</div>
+              <div style={styles.toolResultDetail}>
+                <div><strong>{t('email.to')}:</strong> {data.to}</div>
+                <div><strong>{t('email.subject')}:</strong> {data.subject}</div>
+                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>{data.message}</div>
+              </div>
+            </div>
           </div>
         );
       }
@@ -279,6 +423,35 @@ const ChatView = () => {
       color: '#64748b',
       fontStyle: 'italic'
     },
+    emailItem: {
+      padding: 8,
+      background: '#fff',
+      borderRadius: 6,
+      fontSize: 13,
+      border: '1px solid #e2e8f0',
+      marginBottom: 4
+    },
+    emailMeta: {
+      color: '#64748b',
+      fontSize: 12
+    },
+    emailSnippet: {
+      color: '#475569',
+      fontSize: 12,
+      marginTop: 4,
+      fontStyle: 'italic'
+    },
+    emailBodyPreview: {
+      marginTop: 8,
+      padding: 12,
+      background: '#f9fafb',
+      borderRadius: 6,
+      fontSize: 13,
+      color: '#374151',
+      whiteSpace: 'pre-wrap',
+      maxHeight: 200,
+      overflow: 'auto'
+    },
     inputContainer: {
       padding: 16,
       borderTop: '1px solid #e2e8f0',
@@ -347,7 +520,8 @@ const ChatView = () => {
   const quickActions = [
     { label: t('chat.quickScheduleMeeting'), action: t('chat.quickScheduleMeetingAction') },
     { label: t('chat.quickShowSchedule'), action: t('chat.quickShowScheduleAction') },
-    { label: t('chat.quickAddReminder'), action: t('chat.quickAddReminderAction') }
+    { label: t('chat.quickSearchEmails'), action: t('chat.quickSearchEmailsAction') },
+    { label: t('chat.quickListEmails'), action: t('chat.quickListEmailsAction') }
   ];
 
   return (
