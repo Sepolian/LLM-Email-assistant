@@ -29,7 +29,50 @@ GUI at http://localhost:8000/
 
 The GUI lists recent emails (stubs by default), lets you summarize selected emails using the LLM client (stub if no API key), shows proposed events, and allows creating events (respects the `DRY_RUN` flag in `.env`).
 
-Notes
+
+## Docker Compose (run-only, no manual image build required)
+
+Use `docker-compose` to build (if configured) and run the application without manually invoking `docker build`.
+
+Examples (PowerShell):
+
+Start the app (will build images if the compose file includes a `build:` section):
+
+```powershell
+docker-compose up -d
+```
+
+Start and force rebuild of images (useful after code changes):
+
+```powershell
+docker-compose up -d --build --force-recreate
+```
+
+Stop and remove containers:
+
+```powershell
+docker-compose down
+```
+
+Follow logs (all services):
+
+```powershell
+docker-compose logs -f
+```
+
+Follow logs for a specific service:
+
+```powershell
+docker-compose logs -f <service_name>
+```
+
+Notes and tips:
+- If your `docker-compose.yml` contains a `build:` entry for the backend service, `docker-compose up` will use the repository's `Dockerfile` to build the image automatically — you don't need to run `docker build` separately.
+- Use an `.env` file in the repository root for environment variables referenced by `docker-compose.yml`. Some Compose versions also accept `--env-file .env`.
+- The compose file typically maps `./data` and `./tokens` to container volumes to persist rules, processed state, and OAuth tokens. Ensure those folders exist and are writable.
+- Confirm the exposed ports in `docker-compose.yml` (commonly `8000` for the backend and `3000` for the frontend) and open them in your firewall if required.
+
+## Notes
 - This scaffold contains skeleton modules for each integration. None of the integrations are production-ready yet — they contain TODOs and placeholders.
 - See `docs/project_structure.md` for architecture and next steps.
 - Automation knobs (optional) live in `.env`:
