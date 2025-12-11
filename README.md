@@ -80,3 +80,9 @@ Notes and tips:
 	- `AUTO_LABEL_ENABLED_DEFAULT` (default `false`) defines the initial state of the automation toggle before users change it in Settings.
 
 License: MIT (add your license file)
+
+## Page preview
+
+<img width="1104" height="915" alt="image" src="https://github.com/user-attachments/assets/1877b307-df49-4dff-afe9-fc27fb580a68" />
+<img width="1064" height="858" alt="image" src="https://github.com/user-attachments/assets/7313d32c-860c-4504-baec-ff4de052a954" />
+<img width="1245" height="783" alt="image" src="https://github.com/user-attachments/assets/45440bcf-211e-462f-96f6-aa0d5800061e" />
