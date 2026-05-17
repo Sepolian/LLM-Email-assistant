@@ -105,3 +105,8 @@ Current tests cover demo mode, chat/runtime flows, work-item resumption, email t
 - `docker-compose.yml` enables `DEMO_MODE=true` by default for a faster first run.
 - The frontend is served directly by FastAPI from `frontend/`; no separate Node build step is required.
 - Legacy proposal and approval endpoints still exist in the backend, but the main demo flow uses threads, work items, and timelines.
+
+## Demo preview
+
+<img width="1103" height="1254" alt="image" src="https://github.com/user-attachments/assets/82f97d6b-f348-4ce6-8812-02fa70997c11" />
+<img width="1083" height="1289" alt="image" src="https://github.com/user-attachments/assets/9e3daf2e-f80a-4ed4-aa34-4a2f89a03850" />
