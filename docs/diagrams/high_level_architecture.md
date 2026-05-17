@@ -1,27 +1,33 @@
+# High-Level Architecture
+
 ```mermaid
-graph TD
-    subgraph "User's Browser"
-        Frontend[React SPA]
+flowchart TD
+    subgraph Browser
+        UI[React SPA]
     end
 
-    subgraph "Backend Server"
-        Backend_API[FastAPI Backend]
+    subgraph Backend
+        API[FastAPI routes]
+        Chat[Chat and demo endpoints]
+        Runtime[Assistant runtime]
+        Stores[JSON stores and SQLite checkpoints]
+        Memory[Markdown memory store]
     end
 
-    subgraph "External Services"
-        Gmail[Gmail API]
-        GCal[Google Calendar API]
-        OpenAI[OpenAI API]
+    subgraph Providers
+        Gmail[Gmail API or demo mailbox state]
+        Calendar[Google Calendar API or demo calendar state]
+        LLM[OpenAI-compatible model]
     end
 
-    Frontend -- "HTTP API Calls (JSON)" --> Backend_API
-    Backend_API -- "Fetches/Sends Emails, Applies Labels" --> Gmail
-    Backend_API -- "Creates/Reads Events" --> GCal
-    Backend_API -- "Summarization, Rule Evaluation" --> OpenAI
-
-    style Frontend fill:#cde4ff,stroke:#0066ff,stroke-width:2px
-    style Backend_API fill:#d5e8d4,stroke:#82b366,stroke-width:2px
-    style Gmail fill:#f8cecc,stroke:#b85450,stroke-width:2px
-    style GCal fill:#dae8fc,stroke:#6c8ebf,stroke-width:2px
-    style OpenAI fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+    UI --> API
+    API --> Chat
+    Chat --> Runtime
+    Runtime --> Gmail
+    Runtime --> Calendar
+    Runtime --> LLM
+    Runtime --> Stores
+    Runtime --> Memory
+    API --> Gmail
+    API --> Calendar
 ```

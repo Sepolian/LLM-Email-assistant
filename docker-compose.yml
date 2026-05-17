@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build:
@@ -7,24 +5,22 @@ services:
       dockerfile: Dockerfile
     container_name: llm-email-backend
     volumes:
-      - .:/app
+      - ./data:/app/data
+      - ./tmp:/app/tmp
+      - ./tokens:/app/tokens
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:${BACKEND_PORT:-8000}"
     environment:
       - PYTHONUNBUFFERED=1
       - ENV=development
-    command: python3 -m src.llm_email_app.main
-
-  frontend:
-    image: node:18
-    container_name: llm-email-frontend
-    working_dir: /app/frontend
-    volumes:
-      - ./frontend:/app/frontend
-    ports:
-      - "3000:3000"
-    command: npm start
-
-volumes:
-  app-data:
-    driver: local
+      - BACKEND_PORT=${BACKEND_PORT:-8000}
+      - DRY_RUN=${DRY_RUN:-true}
+      - DEMO_MODE=${DEMO_MODE:-true}
+      - DEMO_REFERENCE_TIME=${DEMO_REFERENCE_TIME:-}
+      - AGENT_ENABLED=${AGENT_ENABLED:-true}
+      - AGENT_MODE=${AGENT_MODE:-semi_auto}
+      - AGENT_SHADOW_MODE=${AGENT_SHADOW_MODE:-false}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENAI_MODEL=${OPENAI_MODEL:-}
+      - OPENAI_API_BASE=${OPENAI_API_BASE:-}
+    command: python -m llm_email_app.main

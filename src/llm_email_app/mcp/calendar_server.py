@@ -380,6 +380,44 @@ class MCPCalendarServer:
 
 class MCPChatHandler:
     """Handles chat interactions with MCP tool calling."""
+
+    WRITE_TOOL_NAMES = {
+        "add_calendar_event",
+        "delete_calendar_event",
+        "update_calendar_event",
+        "draft_reply",
+        "compose_draft",
+    }
+    CONFIRMATION_PHRASES = {
+        "yes",
+        "y",
+        "confirm",
+        "confirmed",
+        "approve",
+        "approved",
+        "go ahead",
+        "proceed",
+        "do it",
+        "ok",
+        "okay",
+        "确认",
+        "同意",
+        "执行",
+        "可以",
+        "是的",
+    }
+    REJECTION_PHRASES = {
+        "no",
+        "n",
+        "cancel",
+        "stop",
+        "reject",
+        "dismiss",
+        "不要",
+        "取消",
+        "拒绝",
+        "停止",
+    }
     
     def __init__(self, llm_client, mcp_server: MCPCalendarServer, email_server=None):
         """Initialize the chat handler.
@@ -393,6 +431,7 @@ class MCPChatHandler:
         self.mcp_server = mcp_server
         self.email_server = email_server
         self.conversation_history: List[Dict[str, str]] = []
+        self.pending_tool_call: Optional[Dict[str, Any]] = None
     
     def _get_system_prompt(self) -> str:
         """Return the system prompt for the chat assistant."""
@@ -469,6 +508,95 @@ Be concise and helpful in your responses."""
             return self.email_server.execute_tool(tool_name, arguments)
         else:
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
+
+    def _is_write_tool(self, tool_name: str) -> bool:
+        return tool_name in self.WRITE_TOOL_NAMES
+
+    def _is_confirmation_message(self, message: str) -> bool:
+        normalized = (message or "").strip().lower()
+        return normalized in self.CONFIRMATION_PHRASES
+
+    def _is_rejection_message(self, message: str) -> bool:
+        normalized = (message or "").strip().lower()
+        return normalized in self.REJECTION_PHRASES
+
+    def _describe_tool_call(self, tool_name: str, arguments: Dict[str, Any]) -> str:
+        if tool_name == "add_calendar_event":
+            return (
+                f"create calendar event '{arguments.get('title', 'Untitled Event')}' "
+                f"on {arguments.get('date')} at {arguments.get('start_time')}"
+            )
+        if tool_name == "update_calendar_event":
+            return f"update calendar event {arguments.get('event_id')}"
+        if tool_name == "delete_calendar_event":
+            return f"delete calendar event {arguments.get('event_id')}"
+        if tool_name == "draft_reply":
+            return f"create a draft reply for email {arguments.get('email_id')}"
+        if tool_name == "compose_draft":
+            return f"create a draft email to {arguments.get('to')}"
+        return f"run {tool_name}"
+
+    def _queue_tool_confirmation(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        description = self._describe_tool_call(tool_name, arguments)
+        self.pending_tool_call = {
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "description": description,
+        }
+        message = f"I am ready to {description}. Reply 'confirm' to proceed or 'cancel' to stop."
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": message,
+        })
+        return {
+            "message": message,
+            "tool_calls": [{
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "result": {
+                    "success": True,
+                    "result": {
+                        "requires_confirmation": True,
+                        "message": description,
+                    },
+                },
+            }],
+            "success": True,
+            "pending_confirmation": True,
+        }
+
+    def _execute_pending_tool(self) -> Dict[str, Any]:
+        pending = self.pending_tool_call
+        if not pending:
+            return {
+                "message": "There is no pending action to confirm.",
+                "tool_calls": [],
+                "success": True,
+            }
+
+        self.pending_tool_call = None
+        tool_name = pending["tool_name"]
+        arguments = pending["arguments"]
+        result = self.execute_tool(tool_name, arguments)
+        tool_result = {
+            "tool_name": tool_name,
+            "arguments": arguments,
+            "result": result,
+        }
+        message = (
+            f"Confirmed. I ran the action to {pending['description']}."
+            if result.get("success")
+            else f"I tried to {pending['description']}, but it failed: {result.get('error', 'unknown error')}"
+        )
+        self.conversation_history.append({
+            "role": "assistant",
+            "content": message,
+        })
+        return {
+            "message": message,
+            "tool_calls": [tool_result],
+            "success": bool(result.get("success")),
+        }
     
     async def chat(self, user_message: str) -> Dict[str, Any]:
         """Process a user message and return a response.
@@ -486,6 +614,37 @@ Be concise and helpful in your responses."""
             "role": "user",
             "content": user_message
         })
+
+        if self.pending_tool_call:
+            if self._is_confirmation_message(user_message):
+                return self._execute_pending_tool()
+            if self._is_rejection_message(user_message):
+                description = self.pending_tool_call.get("description", "run the pending action")
+                self.pending_tool_call = None
+                message = f"Canceled. I will not {description}."
+                self.conversation_history.append({
+                    "role": "assistant",
+                    "content": message,
+                })
+                return {
+                    "message": message,
+                    "tool_calls": [],
+                    "success": True,
+                }
+            reminder = (
+                f"I am still waiting for confirmation to {self.pending_tool_call['description']}. "
+                "Reply 'confirm' to proceed or 'cancel' to stop."
+            )
+            self.conversation_history.append({
+                "role": "assistant",
+                "content": reminder,
+            })
+            return {
+                "message": reminder,
+                "tool_calls": [],
+                "success": True,
+                "pending_confirmation": True,
+            }
         
         # Build messages for LLM
         messages = [
@@ -505,6 +664,9 @@ Be concise and helpful in your responses."""
                 for tool_call in response["tool_calls"]:
                     tool_name = tool_call["function"]["name"]
                     arguments = json.loads(tool_call["function"]["arguments"])
+
+                    if self._is_write_tool(tool_name):
+                        return self._queue_tool_confirmation(tool_name, arguments)
                     
                     # Execute the tool using combined executor
                     result = self.execute_tool(tool_name, arguments)

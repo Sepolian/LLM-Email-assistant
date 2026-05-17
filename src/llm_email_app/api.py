@@ -2,11 +2,13 @@ import os
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 
 import asyncio
+from contextlib import suppress
 import logging
 import calendar as cal
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
+import shutil
 from threading import Lock
 import time
 import uuid
@@ -24,8 +26,11 @@ from llm_email_app.calendar.gcal import GCalClient
 from typing import Dict, Any, List, Optional, Tuple
 from llm_email_app.auth.google_oauth import TOKEN_DIR
 import json
+from llm_email_app.demo_data import demo_reference_now, demo_user_profile, get_demo_script, list_demo_scripts, reset_demo_world
 
 from llm_email_app.llm.openai_client import OpenAIClient
+from llm_email_app.agent import AgentRuntime
+from llm_email_app.agent.state import InvocationContext
 from llm_email_app.email.rules import RuleManager, ProcessedEmailStore
 from llm_email_app.mcp.calendar_server import MCPCalendarServer, MCPChatHandler
 from llm_email_app.mcp.email_server import MCPEmailServer
@@ -47,6 +52,7 @@ PROPOSAL_RETENTION_DAYS = 30
 RULE_MANAGER = RuleManager(settings.AUTO_LABEL_RULES_PATH, settings.AUTO_LABEL_ENABLED_DEFAULT)
 PROCESSED_STORE = ProcessedEmailStore(settings.AUTO_LABEL_PROCESSED_PATH)
 PROPOSALS_PROCESSED_STORE = ProcessedEmailStore(PROPOSALS_PROCESSED_PATH, max_age_days=14, max_entries=500)
+AGENT_PROCESSED_STORE = ProcessedEmailStore(settings.AGENT_PROCESSED_PATH, max_age_days=14, max_entries=1000)
 AUTOMATION_STATUS_LOCK = Lock()
 AUTOMATION_LOG_MAX = 50
 EMAIL_CACHE_MAX_AGE = timedelta(minutes=90)
@@ -58,9 +64,52 @@ AUTOMATION_STATUS: Dict[str, Any] = {
     'logs': [],
 }
 LLM_CLIENT = OpenAIClient()
+AGENT_RUNTIME = AgentRuntime(llm_client=LLM_CLIENT)
 
 # MCP Chat handlers storage (per-session)
 MCP_CHAT_HANDLERS: Dict[str, MCPChatHandler] = {}
+
+
+def _build_agent_runtime() -> AgentRuntime:
+    return AgentRuntime(llm_client=LLM_CLIENT)
+
+
+def _clear_agent_runtime_storage() -> None:
+    file_paths = [
+        settings.AGENT_APPROVALS_PATH,
+        settings.AGENT_WORK_ITEMS_PATH,
+        settings.AGENT_THREADS_PATH,
+        settings.AGENT_TIMELINE_PATH,
+        settings.AGENT_RUNS_PATH,
+        settings.AGENT_CHECKPOINTS_PATH,
+    ]
+    for path in file_paths:
+        candidates = [Path(path)]
+        if str(path).endswith('.sqlite'):
+            candidates.extend([Path(f"{path}-shm"), Path(f"{path}-wal")])
+        for candidate in candidates:
+            try:
+                candidate.unlink(missing_ok=True)
+            except Exception:
+                logger.warning('Unable to remove agent runtime file %s', candidate, exc_info=True)
+
+    for directory in [settings.AGENT_MEMORY_DIR]:
+        try:
+            shutil.rmtree(directory, ignore_errors=True)
+        except Exception:
+            logger.warning('Unable to remove agent runtime directory %s', directory, exc_info=True)
+
+
+def _replace_agent_runtime(clear_state: bool = False) -> AgentRuntime:
+    global AGENT_RUNTIME
+    try:
+        AGENT_RUNTIME.close()
+    except Exception:
+        pass
+    if clear_state:
+        _clear_agent_runtime_storage()
+    AGENT_RUNTIME = _build_agent_runtime()
+    return AGENT_RUNTIME
 
 
 def _get_mcp_chat_handler(session_id: str, gcal_client: GCalClient, gmail_client: GmailClient = None) -> MCPChatHandler:
@@ -297,6 +346,8 @@ def _append_automation_log(message: str, level: str = 'info') -> None:
 def _reset_processed_email_cache(reason: str) -> None:
     """Clear processed-email markers so new/updated rules can reprocess existing threads."""
     PROCESSED_STORE.reset()
+    PROPOSALS_PROCESSED_STORE.reset()
+    AGENT_PROCESSED_STORE.reset()
     _append_automation_log(f"{reason}：已清空已处理邮件缓存")
 
 
@@ -402,16 +453,29 @@ def _delete_proposal(proposal_id: str) -> bool:
 
 def _load_automation_settings() -> Dict[str, Any]:
     """Load automation settings from persistent storage."""
+    defaults = {
+        'auto_add_events': False,
+        'agent_enabled': settings.AGENT_ENABLED,
+        'agent_mode': settings.AGENT_MODE if settings.AGENT_MODE in {'auto', 'semi_auto'} else 'semi_auto',
+        'agent_shadow_mode': settings.AGENT_SHADOW_MODE,
+    }
     try:
         if not AUTOMATION_SETTINGS_PATH.exists():
-            return {'auto_add_events': False}
+            return defaults
         payload = json.loads(AUTOMATION_SETTINGS_PATH.read_text(encoding='utf-8'))
         return {
             'auto_add_events': bool(payload.get('auto_add_events', False)),
+            'agent_enabled': bool(payload.get('agent_enabled', defaults['agent_enabled'])),
+            'agent_mode': (
+                str(payload.get('agent_mode', defaults['agent_mode'])).strip().lower()
+                if str(payload.get('agent_mode', defaults['agent_mode'])).strip().lower() in {'auto', 'semi_auto'}
+                else defaults['agent_mode']
+            ),
+            'agent_shadow_mode': bool(payload.get('agent_shadow_mode', defaults['agent_shadow_mode'])),
         }
     except Exception as exc:
         logger.warning('Unable to load automation settings: %s', exc)
-        return {'auto_add_events': False}
+        return defaults
 
 
 def _save_automation_settings(settings_dict: Dict[str, Any]) -> None:
@@ -420,13 +484,63 @@ def _save_automation_settings(settings_dict: Dict[str, Any]) -> None:
         payload = {
             'updated_at': datetime.now(timezone.utc).isoformat(),
             'auto_add_events': bool(settings_dict.get('auto_add_events', False)),
+            'agent_enabled': bool(settings_dict.get('agent_enabled', settings.AGENT_ENABLED)),
+            'agent_mode': (
+                str(settings_dict.get('agent_mode', settings.AGENT_MODE)).strip().lower()
+                if str(settings_dict.get('agent_mode', settings.AGENT_MODE)).strip().lower() in {'auto', 'semi_auto'}
+                else 'semi_auto'
+            ),
+            'agent_shadow_mode': bool(settings_dict.get('agent_shadow_mode', settings.AGENT_SHADOW_MODE)),
         }
         _write_temp_json(AUTOMATION_SETTINGS_PATH, payload)
     except Exception as exc:
         logger.warning('Unable to save automation settings: %s', exc)
 
 
+def _agent_runtime_enabled() -> bool:
+    return bool(_load_automation_settings().get('agent_enabled', settings.AGENT_ENABLED))
+
+
+def _build_agent_context(
+    *,
+    thread_id: str,
+    user_id: str,
+    source: str,
+    gmail_client: Optional[GmailClient] = None,
+    gcal_client: Optional[GCalClient] = None,
+) -> InvocationContext:
+    agent_settings = _load_automation_settings()
+    rules_state = RULE_MANAGER.get_state()
+    rules = rules_state.get('rules', []) if rules_state.get('automation_enabled') else []
+    thread = AGENT_RUNTIME.get_thread(thread_id) or {}
+    return InvocationContext(
+        thread_id=thread_id,
+        user_id=user_id,
+        thread_kind=str(thread.get('thread_kind') or 'free'),
+        script_id=str(thread.get('script_id') or '') or None,
+        thread_title=str(thread.get('thread_title') or thread.get('title') or '') or None,
+        agent_kind='chat' if source == 'chat' else 'triage',
+        mode=agent_settings.get('agent_mode', settings.AGENT_MODE),
+        shadow_mode=bool(agent_settings.get('agent_shadow_mode', settings.AGENT_SHADOW_MODE)),
+        source=source,
+        gmail_client=gmail_client,
+        gcal_client=gcal_client,
+        llm_client=LLM_CLIENT,
+        rules=rules,
+        automation_settings=agent_settings,
+        log_callback=_append_automation_log,
+        proposal_writer=_add_proposal,
+        proposal_status_updater=_update_proposal_status,
+    )
+
+
+def _demo_mode_enabled() -> bool:
+    return bool(settings.DEMO_MODE)
+
+
 def _require_credentials(request: Request) -> Dict[str, Any]:
+    if _demo_mode_enabled():
+        return {'demo_mode': True, 'user': demo_user_profile()}
     creds_json = get_credentials(request)
     if not creds_json:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -499,6 +613,23 @@ def _auto_label_recent_emails(gmail_client: GmailClient) -> int:
                 time.sleep(delay_seconds)
             continue
 
+        if settings.DRY_RUN and not _demo_mode_enabled():
+            labels = []
+            for match in matches:
+                rule_id = match.get('rule_id')
+                rule = next((r for r in rules if r.get('id') == rule_id), None)
+                if rule and rule.get('label'):
+                    labels.append(rule['label'])
+            _append_automation_log(
+                f"DRY_RUN：邮件「{subject or message_id}」将应用标签：{', '.join(labels) or len(matches)}"
+            )
+            labeled_count += 1
+            if labeled_count >= batch_target:
+                break
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            continue
+
         applied_any = False
         for match in matches:
             rule_id = match.get('rule_id')
@@ -546,7 +677,80 @@ def _auto_label_recent_emails(gmail_client: GmailClient) -> int:
     return labeled_count
 
 
-def _run_auto_label_pipeline(gmail_client: GmailClient, gcal_client: Optional[GCalClient] = None, context: str = 'scheduled') -> None:
+def _run_agentic_automation(gmail_client: GmailClient, gcal_client: Optional[GCalClient] = None, context: str = 'scheduled') -> Dict[str, Any]:
+    agent_settings = _load_automation_settings()
+    rules_state = RULE_MANAGER.get_state()
+    rules = rules_state.get('rules', []) if rules_state.get('automation_enabled') else []
+    lookback_days = max(1, settings.AUTO_LABEL_LOOKBACK_DAYS)
+    batch_target = max(1, settings.AUTO_LABEL_MAX_PER_CYCLE)
+    delay_seconds = max(0.0, settings.AUTO_LABEL_REQUEST_INTERVAL_SECONDS)
+    candidate_limit = batch_target * 3
+
+    candidates = _load_cached_recent_emails(lookback_days, candidate_limit)
+    if not candidates:
+        candidates = gmail_client.fetch_emails_since(days=lookback_days, max_results=candidate_limit)
+    if not candidates:
+        _append_automation_log('Agent 自动化跳过：没有可处理的邮件。', level='warning')
+        return {
+            'processed': 0,
+            'labeled': 0,
+            'proposals': 0,
+            'events': 0,
+            'approvals': 0,
+        }
+
+    labeled = 0
+    proposals = 0
+    events = 0
+    approvals = 0
+    processed = 0
+
+    for email_payload in candidates:
+        message_id = email_payload.get('id')
+        if not message_id or AGENT_PROCESSED_STORE.is_processed(message_id):
+            continue
+        try:
+            result = AGENT_RUNTIME.run_email_triage(
+                email_id=message_id,
+                user_id='automation',
+                gmail_client=gmail_client,
+                gcal_client=gcal_client,
+                rules=rules,
+                automation_settings=agent_settings,
+                mode=agent_settings.get('agent_mode', settings.AGENT_MODE),
+                shadow_mode=bool(agent_settings.get('agent_shadow_mode', settings.AGENT_SHADOW_MODE)),
+                source=context,
+                log_callback=_append_automation_log,
+                proposal_writer=_add_proposal,
+                proposal_status_updater=_update_proposal_status,
+                email_metadata=email_payload,
+            )
+            AGENT_PROCESSED_STORE.mark_processed(message_id)
+            processed += 1
+            labeled += int(result.get('labels_applied', 0) or 0)
+            proposals += int(result.get('proposals_queued', 0) or 0)
+            events += int(result.get('events_created', 0) or 0)
+            if result.get('pending_work_item') or result.get('pending_approval'):
+                approvals += 1
+        except Exception as exc:
+            logger.exception('Agent triage failed for %s: %s', message_id, exc)
+            _append_automation_log(f"Agent 处理失败（{message_id}）：{exc}", level='error')
+
+        if processed >= batch_target:
+            break
+        if delay_seconds:
+            time.sleep(delay_seconds)
+
+    return {
+        'processed': processed,
+        'labeled': labeled,
+        'proposals': proposals,
+        'events': events,
+        'approvals': approvals,
+    }
+
+
+def _run_legacy_auto_label_pipeline(gmail_client: GmailClient, gcal_client: Optional[GCalClient] = None, context: str = 'scheduled') -> None:
     # Run label automation if enabled
     if RULE_MANAGER.automation_enabled():
         try:
@@ -571,6 +775,32 @@ def _run_auto_label_pipeline(gmail_client: GmailClient, gcal_client: Optional[GC
     except Exception as exc:
         logger.exception('Proposal extraction failed: %s', exc)
         _append_automation_log(f"日程提取失败：{exc}", level='error')
+
+
+def _run_auto_label_pipeline(gmail_client: GmailClient, gcal_client: Optional[GCalClient] = None, context: str = 'scheduled') -> None:
+    if not _agent_runtime_enabled():
+        _run_legacy_auto_label_pipeline(gmail_client, gcal_client=gcal_client, context=context)
+        return
+
+    try:
+        run_summary = _run_agentic_automation(gmail_client, gcal_client=gcal_client, context=context)
+        _update_automation_status(
+            last_run_at=datetime.now(timezone.utc).isoformat(),
+            last_labeled=run_summary.get('labeled', 0),
+            last_error=None,
+        )
+        _append_automation_log(
+            f"Agent 自动化运行（{context}）完成：处理 {run_summary.get('processed', 0)} 封邮件，"
+            f"标签 {run_summary.get('labeled', 0)}，提案 {run_summary.get('proposals', 0)}，"
+            f"日历写入 {run_summary.get('events', 0)}，待审批 {run_summary.get('approvals', 0)}。"
+        )
+    except Exception as exc:
+        logger.exception('Agent automation pipeline failed: %s', exc)
+        _update_automation_status(
+            last_run_at=datetime.now(timezone.utc).isoformat(),
+            last_error=str(exc),
+        )
+        _append_automation_log(f"Agent 自动化运行（{context}）失败：{exc}", level='error')
 
 
 def _extract_proposals_from_emails(gmail_client: GmailClient, gcal_client: Optional[GCalClient] = None) -> int:
@@ -661,7 +891,10 @@ def _extract_proposals_from_emails(gmail_client: GmailClient, gcal_client: Optio
             _append_automation_log(f"提取日程提案「{proposal.get('title', '')}」来自邮件「{subject[:40]}」")
             
             # If auto_add_events is enabled, create the event immediately
-            if auto_add_events and gcal_client and gcal_client.service:
+            if auto_add_events and gcal_client:
+                if settings.DRY_RUN and not _demo_mode_enabled():
+                    _append_automation_log(f"DRY_RUN：将自动添加日程「{proposal.get('title', '')}」到日历")
+                    continue
                 try:
                     event_data = {
                         'title': proposal.get('title', ''),
@@ -687,8 +920,8 @@ def _extract_proposals_from_emails(gmail_client: GmailClient, gcal_client: Optio
 
 
 def _trigger_automation_run(gmail_client: Optional[GmailClient], context: str, gcal_client: Optional[GCalClient] = None) -> None:
-    if gmail_client is None or gmail_client.service is None:
-        _append_automation_log(f"自动化（{context}）跳过：Gmail 凭据不可用。", level='warning')
+    if gmail_client is None:
+        _append_automation_log(f"自动化（{context}）跳过：Gmail 客户端不可用。", level='warning')
         return
     _run_auto_label_pipeline(gmail_client, gcal_client=gcal_client, context=context)
 
@@ -718,8 +951,7 @@ def _run_background_cycle() -> None:
 
     _update_automation_status(last_refresh_at=datetime.now(timezone.utc).isoformat())
 
-    if gmail_client.service is not None:
-        _run_auto_label_pipeline(gmail_client, gcal_client=gcal_client, context='background')
+    _run_auto_label_pipeline(gmail_client, gcal_client=gcal_client, context='background')
 
 
 async def _background_refresh_loop(stop_event: asyncio.Event) -> None:
@@ -746,6 +978,10 @@ async def _startup_background_workers() -> None:
     with AUTOMATION_STATUS_LOCK:
         persisted = _load_persisted_logs()
         AUTOMATION_STATUS['logs'] = persisted[-AUTOMATION_LOG_MAX:]
+
+    if _demo_mode_enabled():
+        reset_demo_world()
+        _replace_agent_runtime(clear_state=True)
     
     stop_event = asyncio.Event()
     app.state.refresh_stop_event = stop_event
@@ -759,7 +995,9 @@ async def _shutdown_background_workers() -> None:
     if stop_event:
         stop_event.set()
     if task:
-        await task
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 # Serve frontend from project root (not src/)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # -> project root
@@ -786,6 +1024,11 @@ async def logout(request: Request):
 
 @app.get("/user", response_model=Dict[str, Any])
 async def get_user(request: Request):
+    if _demo_mode_enabled():
+        user = demo_user_profile()
+        request.session["user"] = user
+        return JSONResponse(user)
+
     user = request.session.get("user")
     if user:
         return JSONResponse(user)
@@ -819,6 +1062,8 @@ async def get_user(request: Request):
 
 
 def get_gmail_client(request: Request) -> GmailClient:
+    if _demo_mode_enabled():
+        return GmailClient()
     creds_json = get_credentials(request)
     if not creds_json:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -826,6 +1071,8 @@ def get_gmail_client(request: Request) -> GmailClient:
     return GmailClient(creds=creds)
 
 def get_gcal_client(request: Request) -> GCalClient:
+    if _demo_mode_enabled():
+        return GCalClient()
     creds_json = get_credentials(request)
     if not creds_json:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -833,14 +1080,38 @@ def get_gcal_client(request: Request) -> GCalClient:
     return GCalClient(creds=creds)
 
 
+def _request_user_id(request: Request) -> str:
+    if _demo_mode_enabled():
+        return str(demo_user_profile().get('email') or 'demo-user')
+    user = request.session.get('user') or {}
+    if isinstance(user, dict) and user.get('email'):
+        return str(user['email'])
+    creds_json = get_credentials(request) or {}
+    return str(creds_json.get('client_id') or creds_json.get('token_uri') or 'user')
+
+
+def _get_or_create_session_id(request: Request) -> str:
+    session_id = request.session.get('session_id')
+    if not session_id:
+        session_id = str(uuid.uuid4())
+        request.session['session_id'] = session_id
+    return session_id
+
+
 @app.get('/automation/status', response_model=Dict[str, Any])
 def get_automation_status(request: Request):
     _require_credentials(request)
     status = _automation_status_snapshot()
     rules_state = RULE_MANAGER.get_state()
+    agent_settings = _load_automation_settings()
     status.update({
         'automation_enabled': rules_state['automation_enabled'],
         'rule_count': len(rules_state['rules']),
+        'agent_enabled': bool(agent_settings.get('agent_enabled', settings.AGENT_ENABLED)),
+        'agent_mode': agent_settings.get('agent_mode', settings.AGENT_MODE),
+        'agent_shadow_mode': bool(agent_settings.get('agent_shadow_mode', settings.AGENT_SHADOW_MODE)),
+        'pending_approvals': len(AGENT_RUNTIME.list_approvals(status='pending', limit=500)),
+        'pending_work_items': len(AGENT_RUNTIME.list_work_items(status='pending', limit=500)),
     })
     return status
 
@@ -864,6 +1135,203 @@ def get_automation_logs(request: Request, days: int = 7, limit: int = 100):
         'total': len(filtered),
         'retention_days': LOG_RETENTION_DAYS,
         'query_days': days,
+    }
+
+
+def _work_item_response_payload_or_400(work_item: Dict[str, Any], action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    allowed_actions = list(work_item.get('allowed_actions') or [])
+    if action not in allowed_actions:
+        raise HTTPException(status_code=400, detail=f"Action '{action}' is not allowed for this work item")
+
+    item_type = work_item.get('type')
+    if item_type == 'conflict_decision':
+        choice = str((payload or {}).get('choice') or '').strip()
+        allowed_choices = list(work_item.get('allowed_responses') or [])
+        if not choice or choice not in allowed_choices:
+            raise HTTPException(status_code=400, detail='payload.choice is required and must be one of the allowed responses')
+    elif item_type == 'draft_review' and action == 'edit':
+        if not isinstance(payload.get('subject'), str) or not isinstance(payload.get('body'), str):
+            raise HTTPException(status_code=400, detail='draft_review edit requires payload.subject and payload.body')
+    elif item_type == 'draft_review' and action == 'reject':
+        if 'reason' in payload and not isinstance(payload.get('reason'), str):
+            raise HTTPException(status_code=400, detail='payload.reason must be a string')
+    elif item_type == 'approval' and action == 'edit':
+        tool_args = payload.get('tool_args')
+        if not isinstance(tool_args, dict):
+            raise HTTPException(status_code=400, detail='approval edit requires payload.tool_args')
+    return payload
+
+
+def _resume_agent_work_item(
+    request: Request,
+    work_item_id: str,
+    action: str,
+    payload: Optional[Dict[str, Any]],
+    gmail_client: GmailClient,
+    gcal_client: GCalClient,
+) -> Dict[str, Any]:
+    work_item = AGENT_RUNTIME.get_work_item(work_item_id)
+    if not work_item:
+        raise HTTPException(status_code=404, detail='Work item not found')
+    if work_item.get('status') != 'pending':
+        raise HTTPException(status_code=409, detail='Work item is already resolved')
+
+    body = dict(payload or {})
+    typed_payload = _work_item_response_payload_or_400(work_item, action, dict(body.get('payload') or body))
+    context = _build_agent_context(
+        thread_id=work_item.get('thread_id') or '',
+        user_id=_request_user_id(request),
+        source=str(work_item.get('source') or 'chat'),
+        gmail_client=gmail_client,
+        gcal_client=gcal_client,
+    )
+    context.thread_kind = str((AGENT_RUNTIME.get_thread(work_item.get('thread_id') or '') or {}).get('thread_kind') or 'free')  # type: ignore[assignment]
+    context.script_id = str((AGENT_RUNTIME.get_thread(work_item.get('thread_id') or '') or {}).get('script_id') or '') or None
+    try:
+        result = AGENT_RUNTIME.resume_work_item(
+            work_item_id=work_item_id,
+            action=action,
+            context=context,
+            payload=typed_payload,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    result['thread'] = AGENT_RUNTIME.get_thread(work_item.get('thread_id') or '')
+    result['timeline'] = AGENT_RUNTIME.get_timeline(work_item.get('thread_id') or '')
+    result['inbox_count'] = len(AGENT_RUNTIME.list_work_items(status='pending', limit=500))
+    return result
+
+
+@app.get('/agent/work-items', response_model=Dict[str, Any])
+def list_agent_work_items(request: Request, status: Optional[str] = None, thread_id: Optional[str] = None, limit: int = 100):
+    _require_credentials(request)
+    work_items = AGENT_RUNTIME.list_work_items(status=status, thread_id=thread_id, limit=min(max(limit, 1), 500))
+    return {
+        'work_items': work_items,
+        'total': len(work_items),
+    }
+
+
+@app.get('/agent/work-items/{work_item_id}', response_model=Dict[str, Any])
+def get_agent_work_item(work_item_id: str, request: Request):
+    _require_credentials(request)
+    work_item = AGENT_RUNTIME.get_work_item(work_item_id)
+    if not work_item:
+        raise HTTPException(status_code=404, detail='Work item not found')
+    return work_item
+
+
+@app.post('/agent/work-items/{work_item_id}/respond', response_model=Dict[str, Any])
+def respond_agent_work_item(
+    work_item_id: str,
+    payload: Dict[str, Any],
+    request: Request,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+    gcal_client: GCalClient = Depends(get_gcal_client),
+):
+    _require_credentials(request)
+    action = str(payload.get('action') or '').strip().lower()
+    if not action:
+        raise HTTPException(status_code=400, detail='action is required')
+    return _resume_agent_work_item(request, work_item_id, action, payload, gmail_client, gcal_client)
+
+
+@app.get('/agent/threads', response_model=Dict[str, Any])
+def list_agent_threads(request: Request, limit: int = 100):
+    _require_credentials(request)
+    threads = AGENT_RUNTIME.list_threads(limit=min(max(limit, 1), 500))
+    return {
+        'threads': threads,
+        'total': len(threads),
+    }
+
+
+@app.get('/agent/threads/{thread_id}', response_model=Dict[str, Any])
+def get_agent_thread(thread_id: str, request: Request):
+    _require_credentials(request)
+    thread = AGENT_RUNTIME.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail='Thread not found')
+    return thread
+
+
+@app.get('/agent/threads/{thread_id}/timeline', response_model=Dict[str, Any])
+def get_agent_thread_timeline(thread_id: str, request: Request):
+    _require_credentials(request)
+    thread = AGENT_RUNTIME.get_thread(thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail='Thread not found')
+    timeline = AGENT_RUNTIME.get_timeline(thread_id)
+    return {
+        'thread_id': thread_id,
+        'timeline': timeline,
+        'total': len(timeline),
+    }
+
+
+@app.post('/agent/threads/{thread_id}/continue', response_model=Dict[str, Any])
+def continue_agent_thread(thread_id: str, request: Request):
+    _require_credentials(request)
+    try:
+        thread = AGENT_RUNTIME.continue_from_thread(thread_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        'thread': thread,
+        'timeline': AGENT_RUNTIME.get_timeline(thread['thread_id']),
+    }
+
+
+@app.post('/agent/demo/start', response_model=Dict[str, Any])
+def start_agent_demo(
+    payload: Dict[str, Any],
+    request: Request,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+    gcal_client: GCalClient = Depends(get_gcal_client),
+):
+    _require_credentials(request)
+    script_id = str(payload.get('script_id') or '').strip()
+    if not script_id:
+        raise HTTPException(status_code=400, detail='script_id is required')
+    if _demo_mode_enabled():
+        reset_demo_world()
+        _replace_agent_runtime(clear_state=True)
+    agent_settings = _load_automation_settings()
+    try:
+        result = AGENT_RUNTIME.start_demo(
+            script_id=script_id,
+            user_id=_request_user_id(request),
+            gmail_client=gmail_client,
+            gcal_client=gcal_client,
+            mode=agent_settings.get('agent_mode', settings.AGENT_MODE),
+            shadow_mode=bool(agent_settings.get('agent_shadow_mode', settings.AGENT_SHADOW_MODE)),
+            log_callback=_append_automation_log,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    result['threads'] = AGENT_RUNTIME.list_threads(limit=50)
+    result['work_items'] = AGENT_RUNTIME.list_work_items(status='pending', limit=50)
+    result['demo_scripts'] = list_demo_scripts()
+    return result
+
+
+@app.post('/agent/demo/reset', response_model=Dict[str, Any])
+def reset_agent_demo(payload: Optional[Dict[str, Any]], request: Request):
+    _require_credentials(request)
+    scope = str((payload or {}).get('scope') or 'full').strip().lower()
+    if scope not in {'quick', 'full'}:
+        raise HTTPException(status_code=400, detail='scope must be quick or full')
+    if scope == 'full' and _demo_mode_enabled():
+        reset_demo_world()
+    _replace_agent_runtime(clear_state=True)
+    return {
+        'success': True,
+        'scope': scope,
+        'threads': AGENT_RUNTIME.list_threads(limit=50),
+        'work_items': AGENT_RUNTIME.list_work_items(status='pending', limit=50),
+        'demo_scripts': list_demo_scripts(),
     }
 
 
@@ -919,13 +1387,22 @@ def accept_proposal(
             'location': proposal.get('location', ''),
             'notes': proposal.get('notes', '') + f"\n\n来自邮件：{proposal.get('email_subject', '')}",
         }
+        if settings.DRY_RUN and not _demo_mode_enabled():
+            _append_automation_log(f"DRY_RUN：用户接受日程提案「{proposal.get('title', '')}」，未写入 Google Calendar")
+            return {
+                'success': True,
+                'dry_run': True,
+                'event_id': 'gcal-dry-run-event-id',
+                'proposal': proposal,
+            }
+
         event_id = gcal_client.create_event(event_data)
         if not event_id:
             raise HTTPException(status_code=500, detail='Failed to create calendar event')
         
         updated = _update_proposal_status(proposal_id, 'accepted')
         _append_automation_log(f"用户接受日程提案「{proposal.get('title', '')}」")
-        return {'success': True, 'event_id': event_id, 'proposal': updated}
+        return {'success': True, 'event_id': event_id, 'proposal': updated, 'demo_mode': _demo_mode_enabled()}
     except HTTPException:
         raise
     except Exception as exc:
@@ -975,10 +1452,122 @@ def update_extra_automation_settings(payload: Dict[str, Any], request: Request):
     current = _load_automation_settings()
     if 'auto_add_events' in payload:
         current['auto_add_events'] = bool(payload['auto_add_events'])
+    if 'agent_enabled' in payload:
+        current['agent_enabled'] = bool(payload['agent_enabled'])
+    if 'agent_mode' in payload:
+        candidate = str(payload.get('agent_mode') or '').strip().lower()
+        if candidate not in {'auto', 'semi_auto'}:
+            raise HTTPException(status_code=400, detail='agent_mode must be auto or semi_auto')
+        current['agent_mode'] = candidate
+    if 'agent_shadow_mode' in payload:
+        current['agent_shadow_mode'] = bool(payload['agent_shadow_mode'])
     _save_automation_settings(current)
-    status_msg = '开启' if current['auto_add_events'] else '关闭'
-    _append_automation_log(f"自动添加日程到日历已{status_msg}")
+    _append_automation_log(
+        f"自动化设置已更新：自动加日程={'开启' if current['auto_add_events'] else '关闭'}，"
+        f"agent={'开启' if current['agent_enabled'] else '关闭'}，"
+        f"模式={current['agent_mode']}，shadow={'开启' if current['agent_shadow_mode'] else '关闭'}"
+    )
     return current
+
+
+@app.get('/agent/approvals', response_model=Dict[str, Any])
+def list_agent_approvals(request: Request, status: Optional[str] = None, thread_id: Optional[str] = None, limit: int = 100):
+    _require_credentials(request)
+    approvals = AGENT_RUNTIME.list_approvals(status=status, thread_id=thread_id, limit=min(max(limit, 1), 500))
+    return {
+        'approvals': approvals,
+        'total': len(approvals),
+    }
+
+
+@app.get('/agent/runs', response_model=Dict[str, Any])
+def list_agent_runs(request: Request, thread_id: Optional[str] = None, limit: int = 100):
+    _require_credentials(request)
+    runs = AGENT_RUNTIME.list_runs(thread_id=thread_id, limit=min(max(limit, 1), 500))
+    return {
+        'runs': runs,
+        'total': len(runs),
+    }
+
+
+def _resume_agent_approval(
+    request: Request,
+    approval_id: str,
+    action: str,
+    gmail_client: GmailClient,
+    gcal_client: GCalClient,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    approval = AGENT_RUNTIME.approval_store.get(approval_id)
+    if not approval:
+        raise HTTPException(status_code=404, detail='Approval not found')
+    context = _build_agent_context(
+        thread_id=approval.get('thread_id') or '',
+        user_id=_request_user_id(request),
+        source=str(approval.get('source') or 'chat'),
+        gmail_client=gmail_client,
+        gcal_client=gcal_client,
+    )
+    try:
+        return AGENT_RUNTIME.resume_approval(
+            approval_id=approval_id,
+            action=action,
+            context=context,
+            tool_args=(payload or {}).get('tool_args'),
+            response=(payload or {}).get('response'),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post('/agent/approvals/{approval_id}/approve', response_model=Dict[str, Any])
+def approve_agent_approval(
+    approval_id: str,
+    request: Request,
+    payload: Optional[Dict[str, Any]] = None,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+    gcal_client: GCalClient = Depends(get_gcal_client),
+):
+    _require_credentials(request)
+    return _resume_agent_approval(request, approval_id, 'approve', gmail_client, gcal_client, payload)
+
+
+@app.post('/agent/approvals/{approval_id}/reject', response_model=Dict[str, Any])
+def reject_agent_approval(
+    approval_id: str,
+    request: Request,
+    payload: Optional[Dict[str, Any]] = None,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+    gcal_client: GCalClient = Depends(get_gcal_client),
+):
+    _require_credentials(request)
+    return _resume_agent_approval(request, approval_id, 'reject', gmail_client, gcal_client, payload)
+
+
+@app.post('/agent/approvals/{approval_id}/edit', response_model=Dict[str, Any])
+def edit_agent_approval(
+    approval_id: str,
+    request: Request,
+    payload: Dict[str, Any],
+    gmail_client: GmailClient = Depends(get_gmail_client),
+    gcal_client: GCalClient = Depends(get_gcal_client),
+):
+    _require_credentials(request)
+    if not isinstance(payload.get('tool_args'), dict):
+        raise HTTPException(status_code=400, detail='tool_args must be an object')
+    return _resume_agent_approval(request, approval_id, 'edit', gmail_client, gcal_client, payload)
+
+
+@app.post('/agent/approvals/{approval_id}/respond', response_model=Dict[str, Any])
+def respond_agent_approval(
+    approval_id: str,
+    request: Request,
+    payload: Dict[str, Any],
+    gmail_client: GmailClient = Depends(get_gmail_client),
+    gcal_client: GCalClient = Depends(get_gcal_client),
+):
+    _require_credentials(request)
+    return _resume_agent_approval(request, approval_id, 'respond', gmail_client, gcal_client, payload)
 
 
 @app.get('/automation/rules', response_model=Dict[str, Any])
@@ -1098,10 +1687,46 @@ def get_cached_emails(request: Request):
     return payload
 
 @app.get("/emails/search", response_model=List[Dict[str, Any]])
-def search_emails(q: str, gmail_client: GmailClient = Depends(get_gmail_client)):
-    # This is a placeholder, as the original gmail_client did not have a generic search function.
-    # We will implement this later.
-    return []
+def search_emails(
+    q: str,
+    gmail_client: GmailClient = Depends(get_gmail_client),
+    days: int = 14,
+    limit: int = 20,
+):
+    query = (q or '').strip().lower()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query is required")
+
+    capped_limit = max(1, min(limit, 50))
+    lookback_days = max(1, min(days, 90))
+    candidates = _load_cached_recent_emails(lookback_days, capped_limit * 5)
+    if not candidates:
+        candidates = gmail_client.fetch_emails_since(days=lookback_days, max_results=capped_limit * 5)
+
+    results: List[Dict[str, Any]] = []
+    for item in candidates:
+        haystack = " ".join([
+            str(item.get('from') or ''),
+            str(item.get('subject') or ''),
+            str(item.get('snippet') or ''),
+            str(item.get('body') or ''),
+            " ".join(item.get('labels') or []),
+        ]).lower()
+        if query not in haystack:
+            continue
+        results.append({
+            'id': item.get('id'),
+            'from': item.get('from'),
+            'subject': item.get('subject'),
+            'snippet': item.get('snippet') or (item.get('body') or '')[:200],
+            'received': item.get('received'),
+            'labels': item.get('labels') or [],
+            'folder': item.get('folder'),
+        })
+        if len(results) >= capped_limit:
+            break
+
+    return results
 
 @app.post("/emails/send")
 def send_email(email_data: Dict[str, Any], gmail_client: GmailClient = Depends(get_gmail_client)):
@@ -1170,7 +1795,7 @@ def get_calendar_events(
     time_max: Optional[str] = None,
     month: Optional[str] = None,
 ):
-    now = datetime.now(timezone.utc)
+    now = demo_reference_now().astimezone(timezone.utc) if _demo_mode_enabled() else datetime.now(timezone.utc)
 
     if month:
         start, end = _month_bounds(month)
@@ -1245,12 +1870,12 @@ def serve_spa_routes_with_slash(spa_path: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MCP Chat API endpoints
+# Chat / agent API endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post('/chat', response_model=Dict[str, Any])
 async def chat_with_assistant(
-    payload: Dict[str, str],
+    payload: Dict[str, Any],
     request: Request,
     gcal_client: GCalClient = Depends(get_gcal_client),
     gmail_client: GmailClient = Depends(get_gmail_client),
@@ -1262,24 +1887,40 @@ async def chat_with_assistant(
     """
     _require_credentials(request)
     
-    message = payload.get('message', '').strip()
+    message = str(payload.get('message') or '').strip()
     if not message:
         raise HTTPException(status_code=400, detail='Message is required')
     
-    # Get session ID for conversation tracking
-    session_id = request.session.get('session_id')
-    if not session_id:
-        import uuid
-        session_id = str(uuid.uuid4())
-        request.session['session_id'] = session_id
-    
-    # Get chat handler with both calendar and email support
+    requested_thread_id = str(payload.get('thread_id') or '').strip()
+    session_id = _get_or_create_session_id(request)
+    thread_id = requested_thread_id or ('chat-free-exploration' if _demo_mode_enabled() else session_id)
+    if _agent_runtime_enabled():
+        agent_settings = _load_automation_settings()
+        rules_state = RULE_MANAGER.get_state()
+        rules = rules_state.get('rules', []) if rules_state.get('automation_enabled') else []
+        result = AGENT_RUNTIME.run_chat(
+            message=message,
+            thread_id=thread_id,
+            user_id=_request_user_id(request),
+            gmail_client=gmail_client,
+            gcal_client=gcal_client,
+            rules=rules,
+            automation_settings=agent_settings,
+            mode=agent_settings.get('agent_mode', settings.AGENT_MODE),
+            shadow_mode=bool(agent_settings.get('agent_shadow_mode', settings.AGENT_SHADOW_MODE)),
+            source='chat',
+            log_callback=_append_automation_log,
+            proposal_writer=_add_proposal,
+            proposal_status_updater=_update_proposal_status,
+        )
+        result['thread'] = AGENT_RUNTIME.get_thread(thread_id)
+        result['timeline'] = AGENT_RUNTIME.get_timeline(thread_id)
+        result['inbox_count'] = len(AGENT_RUNTIME.list_work_items(status='pending', limit=500))
+        result['thread_id'] = thread_id
+        return result
+
     handler = _get_mcp_chat_handler(session_id, gcal_client, gmail_client)
-    
-    # Process the message
-    result = await handler.chat(message)
-    
-    return result
+    return await handler.chat(message)
 
 
 @app.post('/chat/reset', response_model=Dict[str, bool])
@@ -1290,16 +1931,19 @@ async def reset_chat(request: Request):
     session_id = request.session.get('session_id')
     if session_id and session_id in MCP_CHAT_HANDLERS:
         MCP_CHAT_HANDLERS[session_id].reset_conversation()
-    
+    request.session['session_id'] = str(uuid.uuid4())
+    if _agent_runtime_enabled() and _demo_mode_enabled():
+        _replace_agent_runtime(clear_state=True)
     return {'success': True}
 
 
 @app.get('/chat/tools', response_model=List[Dict[str, Any]])
 async def get_available_tools(request: Request):
-    """Get the list of available MCP tools (calendar and email)."""
+    """Get the list of available tools."""
     _require_credentials(request)
-    
-    # Create temporary servers to get tool definitions
+    if _agent_runtime_enabled():
+        return AGENT_RUNTIME.list_tools()
+
     calendar_server = MCPCalendarServer()
     email_server = MCPEmailServer()
     return calendar_server.get_tools() + email_server.get_tools()

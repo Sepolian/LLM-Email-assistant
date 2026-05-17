@@ -1,0 +1,134 @@
+{
+  "user": {
+    "name": "Avery Chen",
+    "email": "avery.chen@demo.mailflow.local",
+    "picture": null
+  },
+  "labels": [
+    "Action Needed",
+    "Travel",
+    "Finance",
+    "Hiring"
+  ],
+  "messages": [
+    {
+      "id": "demo-inbox-client-launch",
+      "threadId": "thread-client-launch",
+      "scenario_id": "client_launch_conflict",
+      "demo_role": "flagship",
+      "script_anchor": "flagship_conflict",
+      "expected_thread": "demo-flagship-conflict",
+      "event_request": {
+        "title": "Client launch rehearsal",
+        "start": "2026-05-08T15:00:00+08:00",
+        "end": "2026-05-08T15:30:00+08:00",
+        "timeZone": "Asia/Hong_Kong",
+        "location": "Zoom",
+        "notes": "30-minute rehearsal with design and ops leads.",
+        "attendees": [
+          "maya@northstarstudios.co"
+        ]
+      },
+      "from": "Maya Patel <maya@northstarstudios.co>",
+      "to": "avery.chen@demo.mailflow.local",
+      "subject": "Need confirmation: client launch rehearsal on 2026-05-08 at 15:00",
+      "body": "Hi Avery,\n\nCan you confirm the client launch rehearsal on 2026-05-08 at 15:00 HKT? We'll use Zoom and need 30 minutes with the design and ops leads.\n\nPlease reply if you want me to move it.\n\nThanks,\nMaya",
+      "snippet": "Can you confirm the client launch rehearsal on 2026-05-08 at 15:00 HKT?",
+      "received": "2026-05-06T08:35:00+08:00",
+      "labels": ["INBOX", "Action Needed"],
+      "label_ids": ["INBOX", "Action Needed"],
+      "folder": "inbox",
+      "is_read": false
+    },
+    {
+      "id": "demo-inbox-budget",
+      "threadId": "thread-budget",
+      "scenario_id": "budget_summary",
+      "demo_role": "support",
+      "script_anchor": "search_and_summarize",
+      "expected_thread": "demo-search-summarize",
+      "from": "Jordan Wu <jordan.wu@acme-capital.example>",
+      "to": "avery.chen@demo.mailflow.local",
+      "subject": "Budget review follow-up and requested reply",
+      "body": "Avery,\n\nPlease send me a reply draft today confirming whether you can join the budget review next Tuesday at 10:00. If that time works, I will send the final agenda.\n\nJordan",
+      "snippet": "Please send me a reply draft today confirming whether you can join the budget review next Tuesday at 10:00.",
+      "received": "2026-05-06T07:10:00+08:00",
+      "labels": ["INBOX", "Finance"],
+      "label_ids": ["INBOX", "Finance"],
+      "folder": "inbox",
+      "is_read": false
+    },
+    {
+      "id": "demo-inbox-travel",
+      "threadId": "thread-travel",
+      "scenario_id": "travel_hold",
+      "from": "Lena Ortiz <lena@travelops.example>",
+      "to": "avery.chen@demo.mailflow.local",
+      "subject": "Flight held for Shenzhen offsite",
+      "body": "Hi Avery,\n\nI've placed a 24-hour hold on your Friday 09:20 flight to Shenzhen for the product offsite. Please confirm if you want me to ticket it.\n\nBest,\nLena",
+      "snippet": "I've placed a 24-hour hold on your Friday 09:20 flight to Shenzhen for the product offsite.",
+      "received": "2026-05-05T17:20:00+08:00",
+      "labels": ["INBOX", "Travel"],
+      "label_ids": ["INBOX", "Travel"],
+      "folder": "inbox",
+      "is_read": true
+    },
+    {
+      "id": "demo-inbox-hiring",
+      "threadId": "thread-hiring",
+      "scenario_id": "hiring_panel_request",
+      "from": "Priya Raman <priya.raman@talent.example>",
+      "to": "avery.chen@demo.mailflow.local",
+      "subject": "Candidate panel interview request for 2026-05-09 11:30",
+      "body": "Hello Avery,\n\nCould you join a panel interview for Samir on 2026-05-09 at 11:30 HKT? The hiring manager and design lead are already available.\n\nThanks,\nPriya",
+      "snippet": "Could you join a panel interview for Samir on 2026-05-09 at 11:30 HKT?",
+      "received": "2026-05-05T10:05:00+08:00",
+      "labels": ["INBOX", "Hiring"],
+      "label_ids": ["INBOX", "Hiring"],
+      "folder": "inbox",
+      "is_read": false
+    },
+    {
+      "id": "demo-sent-status",
+      "threadId": "thread-status",
+      "from": "Avery Chen <avery.chen@demo.mailflow.local>",
+      "to": "ops@northstarstudios.co",
+      "subject": "Weekly rollout status",
+      "body": "Sharing this week's rollout status and the outstanding blockers for launch readiness.",
+      "snippet": "Sharing this week's rollout status and the outstanding blockers for launch readiness.",
+      "received": "2026-05-05T18:00:00+08:00",
+      "labels": ["SENT"],
+      "label_ids": ["SENT"],
+      "folder": "sent",
+      "is_read": true
+    },
+    {
+      "id": "demo-draft-vendor",
+      "threadId": "thread-vendor",
+      "from": "Avery Chen <avery.chen@demo.mailflow.local>",
+      "to": "vendor@acoustics.example",
+      "subject": "Draft: AV checklist for launch day",
+      "body": "Can you confirm the final AV checklist and on-site technician arrival time?",
+      "snippet": "Can you confirm the final AV checklist and on-site technician arrival time?",
+      "received": "2026-05-04T19:45:00+08:00",
+      "labels": ["DRAFT"],
+      "label_ids": ["DRAFT"],
+      "folder": "drafts",
+      "is_read": true
+    },
+    {
+      "id": "demo-trash-promo",
+      "threadId": "thread-promo",
+      "from": "Promo Bot <promo@random.example>",
+      "to": "avery.chen@demo.mailflow.local",
+      "subject": "Claim your conference pass upgrade now",
+      "body": "This is an automated promotion with no action needed.",
+      "snippet": "This is an automated promotion with no action needed.",
+      "received": "2026-05-03T12:00:00+08:00",
+      "labels": ["TRASH"],
+      "label_ids": ["TRASH"],
+      "folder": "trash",
+      "is_read": true
+    }
+  ]
+}

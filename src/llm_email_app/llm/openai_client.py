@@ -78,10 +78,9 @@ class OpenAIClient:
         if not self._use_requests and self.api_key:
             # try to use official openai SDK if available and no custom base provided
             try:
-                import openai
+                from openai import OpenAI
 
-                openai.api_key = self.api_key
-                self._client = openai
+                self._client = OpenAI(api_key=self.api_key)
             except Exception:
                 # SDK not available; fall back to requests if api_base provided, else to stub
                 self._client = None
@@ -127,7 +126,7 @@ class OpenAIClient:
         if not self._client:
             raise RuntimeError('OpenAI client not configured')
 
-        resp = self._client.ChatCompletion.create(
+        resp = self._client.chat.completions.create(
             model=self.model,
             messages=messages,
             temperature=temperature,

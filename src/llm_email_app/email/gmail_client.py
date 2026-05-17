@@ -8,6 +8,7 @@ import email as py_email
 from email.utils import parseaddr
 import logging
 from datetime import datetime, timezone, timedelta
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ except Exception:
     HttpError = Exception  # type: ignore
 
 from llm_email_app.config import settings
+from llm_email_app.demo_data import demo_reference_now, load_demo_mailbox_state, save_demo_mailbox_state
 
 FOLDER_LABELS: Dict[str, str] = {
     'inbox': 'INBOX',
@@ -50,6 +52,7 @@ class GmailClient:
         self.creds = creds
         self.service = None
         self._label_cache: Dict[str, str] = {}
+        self._demo_mode = bool(settings.DEMO_MODE)
         if build is None:
             logger.info('googleapiclient not installed; GmailClient will return stubbed emails')
             return
@@ -72,6 +75,108 @@ class GmailClient:
         except Exception as e:
             logger.exception('Failed to initialize Gmail service; falling back to stubs: %s', e)
             self.service = None
+
+    def _is_demo_mode(self) -> bool:
+        return self._demo_mode and self.service is None
+
+    def _demo_state(self) -> Dict[str, Any]:
+        return load_demo_mailbox_state()
+
+    def _save_demo_state(self, payload: Dict[str, Any]) -> None:
+        save_demo_mailbox_state(payload)
+
+    def _folder_key_for_message(self, item: Dict[str, Any]) -> str:
+        raw_folder = str(item.get('folder') or '').strip().lower()
+        if raw_folder:
+            folder = canonical_folder_key(raw_folder)
+            if folder in FOLDER_LABELS:
+                return folder
+            return folder
+        labels = [str(label).upper() for label in (item.get('labels') or [])]
+        if 'TRASH' in labels:
+            return 'trash'
+        if 'DRAFT' in labels:
+            return 'drafts'
+        if 'SENT' in labels:
+            return 'sent'
+        return 'inbox'
+
+    def _normalize_demo_message(self, raw_item: Dict[str, Any]) -> Dict[str, Any]:
+        item = dict(raw_item)
+        folder_key = self._folder_key_for_message(item)
+        folder_label = FOLDER_LABELS.get(folder_key, folder_key.upper())
+        labels = [str(label) for label in (item.get('labels') or [])]
+        if folder_label not in labels:
+            labels.insert(0, folder_label)
+        label_ids = [str(label_id) for label_id in (item.get('label_ids') or labels)]
+        received = item.get('received') or datetime.now(timezone.utc).isoformat()
+        snippet = item.get('snippet') or ((item.get('body') or '')[:160])
+        return {
+            'id': item.get('id') or f'demo-email-{uuid.uuid4().hex[:10]}',
+            'threadId': item.get('threadId') or item.get('thread_id') or item.get('id') or f'demo-thread-{uuid.uuid4().hex[:8]}',
+            'from': item.get('from') or '',
+            'to': item.get('to') or 'avery.chen@demo.mailflow.local',
+            'cc': item.get('cc') or '',
+            'bcc': item.get('bcc') or '',
+            'subject': item.get('subject') or '',
+            'body': item.get('body') or '',
+            'html': item.get('html'),
+            'snippet': snippet,
+            'received': received,
+            'labels': labels,
+            'label_ids': label_ids,
+            'folder': folder_key,
+            'is_read': bool(item.get('is_read', False)),
+        }
+
+    def _demo_messages(self) -> List[Dict[str, Any]]:
+        state = self._demo_state()
+        messages = [self._normalize_demo_message(item) for item in state.get('messages', [])]
+        messages.sort(key=lambda item: item.get('received') or '', reverse=True)
+        return messages
+
+    def _persist_demo_messages(self, messages: List[Dict[str, Any]]) -> None:
+        state = self._demo_state()
+        state['messages'] = messages
+        known_labels = {str(label) for label in state.get('labels', [])}
+        for item in messages:
+            for label in (item.get('labels') or []):
+                known_labels.add(str(label))
+        state['labels'] = sorted(known_labels)
+        self._save_demo_state(state)
+
+    def _demo_find_message(self, message_id: str) -> Optional[Dict[str, Any]]:
+        for item in self._demo_messages():
+            if item.get('id') == message_id:
+                return item
+        return None
+
+    def _demo_write_message(self, updated: Dict[str, Any]) -> None:
+        messages = self._demo_messages()
+        next_messages: List[Dict[str, Any]] = []
+        found = False
+        for item in messages:
+            if item.get('id') == updated.get('id'):
+                next_messages.append(self._normalize_demo_message(updated))
+                found = True
+            else:
+                next_messages.append(item)
+        if not found:
+            next_messages.append(self._normalize_demo_message(updated))
+        self._persist_demo_messages(next_messages)
+
+    def _demo_window_messages(self, days: int) -> List[Dict[str, Any]]:
+        cutoff = demo_reference_now().astimezone(timezone.utc) - timedelta(days=max(1, days))
+        filtered: List[Dict[str, Any]] = []
+        for item in self._demo_messages():
+            received = item.get('received')
+            try:
+                current = datetime.fromisoformat(str(received).replace('Z', '+00:00'))
+            except Exception:
+                current = None
+            if current is None or current >= cutoff:
+                filtered.append(item)
+        return filtered
 
     def _refresh_label_cache(self) -> Dict[str, str]:
         """Fetch Gmail labels and memoize id->name lookups."""
@@ -163,6 +268,9 @@ class GmailClient:
 
     def _generate_stub_emails(self, label_key: str, limit: int) -> List[Dict[str, Any]]:
         """Return deterministic stub data per mailbox for local development."""
+        if self._is_demo_mode():
+            candidates = [item for item in self._demo_messages() if self._folder_key_for_message(item) == label_key]
+            return candidates[:limit]
         now = datetime.now(timezone.utc)
         fixtures = {
             'inbox': [
@@ -319,7 +427,10 @@ class GmailClient:
         """
         # If service missing, return stubs
         if self.service is None:
-            return self.fetch_recent_emails(max_results=max_results or 5)
+            if self._is_demo_mode():
+                items = self._demo_window_messages(days)
+                return items[:max_results] if max_results else items
+            return self.fetch_recent_emails(per_page=max_results or 5)
 
         # Gmail search operator 'newer_than:Xd' is convenient
         q = f'newer_than:{days}d'
@@ -351,7 +462,7 @@ class GmailClient:
             The list of emails
         """
         if self.service is None:
-            return self.fetch_recent_emails(max_results=max_results or 5)
+            return self.fetch_recent_emails(per_page=max_results or 5)
         
         try:
             req = self.service.users().messages().list(userId='me', labelIds=[label])
@@ -383,6 +494,31 @@ class GmailClient:
         Returns:
             The ID of the sent email
         """
+        if self._is_demo_mode():
+            message_id = f'demo-sent-{uuid.uuid4().hex[:10]}'
+            sent_at = datetime.now(timezone.utc).isoformat()
+            self._demo_write_message({
+                'id': message_id,
+                'threadId': message_id,
+                'from': 'Avery Chen <avery.chen@demo.mailflow.local>',
+                'to': to,
+                'cc': cc or '',
+                'bcc': bcc or '',
+                'subject': subject,
+                'body': body,
+                'snippet': body[:160],
+                'received': sent_at,
+                'labels': ['SENT'],
+                'label_ids': ['SENT'],
+                'folder': 'sent',
+                'is_read': True,
+            })
+            return message_id
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; email will not be sent to %s with subject %s', to, subject)
+            return 'gmail-dry-run-sent-id'
+
         if self.service is None:
             logger.warning('Gmail service not available; cannot send email')
             return 'stub-sent-id'
@@ -423,6 +559,33 @@ class GmailClient:
         Returns:
             The ID of the sent email
         """
+        if self._is_demo_mode():
+            original = self._demo_find_message(message_id)
+            subject = original.get('subject') if original else ''
+            sender = original.get('from') if original else ''
+            _, to_addr = parseaddr(sender)
+            reply_id = f'demo-reply-{uuid.uuid4().hex[:10]}'
+            sent_at = datetime.now(timezone.utc).isoformat()
+            self._demo_write_message({
+                'id': reply_id,
+                'threadId': (original or {}).get('threadId') or reply_id,
+                'from': 'Avery Chen <avery.chen@demo.mailflow.local>',
+                'to': to_addr or sender or 'contact@demo.local',
+                'subject': f"Re: {subject}".strip(),
+                'body': body,
+                'snippet': body[:160],
+                'received': sent_at,
+                'labels': ['SENT'],
+                'label_ids': ['SENT'],
+                'folder': 'sent',
+                'is_read': True,
+            })
+            return reply_id
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; reply will not be sent for message %s', message_id)
+            return 'gmail-dry-run-reply-id'
+
         if self.service is None:
             logger.warning('Gmail service not available; cannot reply to email')
             return 'stub-reply-id'
@@ -465,6 +628,22 @@ class GmailClient:
 
     def delete_email(self, message_id: str) -> bool:
         """Move an email to Gmail Trash."""
+        if self._is_demo_mode():
+            item = self._demo_find_message(message_id)
+            if not item:
+                return False
+            labels = [label for label in (item.get('labels') or []) if label not in {'INBOX', 'SENT', 'DRAFT'}]
+            labels.append('TRASH')
+            item['labels'] = list(dict.fromkeys(labels))
+            item['label_ids'] = list(item['labels'])
+            item['folder'] = 'trash'
+            self._demo_write_message(item)
+            return True
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; email %s will not be moved to trash', message_id)
+            return True
+
         if self.service is None:
             logger.warning('Gmail service not available; cannot move email to trash')
             return False
@@ -487,6 +666,23 @@ class GmailClient:
         Returns:
             True if successful, False otherwise
         """
+        if self._is_demo_mode():
+            item = self._demo_find_message(message_id)
+            if not item:
+                return False
+            item['is_read'] = bool(read)
+            labels = [label for label in (item.get('labels') or []) if label != 'UNREAD']
+            if not read:
+                labels.append('UNREAD')
+            item['labels'] = list(dict.fromkeys(labels))
+            item['label_ids'] = list(item['labels'])
+            self._demo_write_message(item)
+            return True
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; email %s read state will not be changed to %s', message_id, read)
+            return True
+
         if self.service is None:
             logger.warning('Gmail service not available; cannot mark email')
             return False
@@ -521,6 +717,20 @@ class GmailClient:
         Returns:
             True if successful, False otherwise
         """
+        if self._is_demo_mode():
+            item = self._demo_find_message(message_id)
+            if not item:
+                return False
+            item['labels'] = [label for label in (item.get('labels') or []) if label != 'INBOX']
+            item['label_ids'] = list(item['labels'])
+            item['folder'] = 'archived'
+            self._demo_write_message(item)
+            return True
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; email %s will not be archived', message_id)
+            return True
+
         if self.service is None:
             logger.warning('Gmail service not available; cannot archive email')
             return False
@@ -546,6 +756,19 @@ class GmailClient:
         Returns:
             The ID of the label
         """
+        if self._is_demo_mode():
+            state = self._demo_state()
+            labels = {str(label) for label in state.get('labels', [])}
+            labels.add(label_name)
+            state['labels'] = sorted(labels)
+            self._save_demo_state(state)
+            self._label_cache[label_name] = label_name
+            return label_name
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; label %s will not be created', label_name)
+            return 'gmail-dry-run-label-id'
+
         if self.service is None:
             logger.warning('Gmail service not available; cannot check or create label')
             return 'stub-label-id'
@@ -579,6 +802,24 @@ class GmailClient:
         Returns:
             True if successful, False otherwise
         """
+        if self._is_demo_mode():
+            item = self._demo_find_message(message_id)
+            if not item:
+                return False
+            labels = list(item.get('labels') or [])
+            for label_id in label_ids:
+                label = self._label_cache.get(label_id, label_id)
+                if label not in labels:
+                    labels.append(label)
+            item['labels'] = labels
+            item['label_ids'] = labels
+            self._demo_write_message(item)
+            return True
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; labels %s will not be applied to message %s', label_ids, message_id)
+            return True
+
         if self.service is None:
             logger.warning('Gmail service not available; cannot apply labels to message')
             return False
@@ -597,6 +838,8 @@ class GmailClient:
     def get_message(self, message_id: str) -> Optional[Dict[str, Any]]:
         """Fetch a single Gmail message by ID and parse it into a dict with id, from, subject, body, received."""
         if self.service is None:
+            if self._is_demo_mode():
+                return self._demo_find_message(message_id)
             # Stub fallback: return a fake message for local dev
             return {
                 "id": message_id,
@@ -651,6 +894,35 @@ class GmailClient:
         Returns:
             Dict with draft info including id, or None on failure
         """
+        if self._is_demo_mode():
+            draft_id = f'demo-draft-{uuid.uuid4().hex[:10]}'
+            now = datetime.now(timezone.utc).isoformat()
+            self._demo_write_message({
+                'id': draft_id,
+                'threadId': reply_to_message_id or draft_id,
+                'from': 'Avery Chen <avery.chen@demo.mailflow.local>',
+                'to': to,
+                'subject': subject,
+                'body': body,
+                'snippet': body[:160],
+                'received': now,
+                'labels': ['DRAFT'],
+                'label_ids': ['DRAFT'],
+                'folder': 'drafts',
+                'is_read': True,
+            })
+            return {
+                'id': draft_id,
+                'message': {'id': f'{draft_id}-message'},
+            }
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; draft will not be created for %s with subject %s', to, subject)
+            return {
+                'id': f'gmail-dry-run-draft-{datetime.now(timezone.utc).timestamp()}',
+                'message': {'id': 'gmail-dry-run-message-id'},
+            }
+
         if self.service is None:
             logger.warning('Gmail service not available; returning stub draft')
             return {

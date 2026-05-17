@@ -5,6 +5,8 @@ It uses `googleapiclient` when available and falls back to a stub when not confi
 """
 from typing import Dict, Any, Optional, List
 import logging
+from datetime import datetime, timezone
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -16,12 +18,14 @@ except Exception:
     HttpError = Exception  # type: ignore
 
 from llm_email_app.config import settings
+from llm_email_app.demo_data import load_demo_calendar_state, save_demo_calendar_state
 
 
 class GCalClient:
     def __init__(self, creds: object = None):
         self.creds = creds
         self.service = None
+        self._demo_mode = bool(settings.DEMO_MODE)
         if build is None:
             logger.info('googleapiclient not installed; GCalClient will use stubbed create_event')
             return
@@ -39,11 +43,91 @@ class GCalClient:
             logger.exception('Failed to initialize Google Calendar service: %s', e)
             self.service = None
 
+    def _is_demo_mode(self) -> bool:
+        return self._demo_mode and self.service is None
+
+    def _demo_state(self) -> Dict[str, Any]:
+        return load_demo_calendar_state()
+
+    def _save_demo_state(self, payload: Dict[str, Any]) -> None:
+        save_demo_calendar_state(payload)
+
+    def _normalize_demo_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        item = dict(event)
+        event_id = item.get('id') or f"demo-event-{uuid.uuid4().hex[:10]}"
+        summary = item.get('summary') or item.get('title') or 'Untitled event'
+        description = item.get('description') or item.get('notes') or ''
+        location = item.get('location') or ''
+        attendees = item.get('attendees') or []
+        start = item.get('start') or {}
+        end = item.get('end') or {}
+        if isinstance(start, str):
+            start = {'dateTime': start}
+        if isinstance(end, str):
+            end = {'dateTime': end}
+        if not start:
+            start = {'dateTime': datetime.now(timezone.utc).isoformat()}
+        if not end:
+            end = dict(start)
+        return {
+            'id': event_id,
+            'summary': summary,
+            'description': description,
+            'location': location,
+            'attendees': attendees,
+            'start': start,
+            'end': end,
+            'status': item.get('status') or 'confirmed',
+            'htmlLink': item.get('htmlLink') or f'https://demo.mailflow.local/calendar/{event_id}',
+            'updated': item.get('updated') or datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _demo_events(self) -> List[Dict[str, Any]]:
+        state = self._demo_state()
+        events = [self._normalize_demo_event(item) for item in state.get('events', [])]
+        events.sort(key=lambda item: (item.get('start') or {}).get('dateTime') or (item.get('start') or {}).get('date') or '')
+        return events
+
+    def _persist_demo_events(self, events: List[Dict[str, Any]]) -> None:
+        state = self._demo_state()
+        state['events'] = events
+        self._save_demo_state(state)
+
+    def _parse_filter_time(self, value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            candidate = value.replace('Z', '+00:00')
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except Exception:
+            return None
+
     def create_event(self, proposal: Dict[str, Any]) -> str:
         """Create an event from a proposal dict and return the created event id.
 
         proposal expected fields: title, start (ISO), end (ISO), attendees (list of emails), location, notes
         """
+        if self._is_demo_mode():
+            event = self._normalize_demo_event({
+                'summary': proposal.get('title'),
+                'description': proposal.get('notes') or '',
+                'location': proposal.get('location') or '',
+                'attendees': [{'email': a} for a in (proposal.get('attendees') or [])],
+                'start': {'dateTime': proposal.get('start'), 'timeZone': proposal.get('timeZone', 'UTC')},
+                'end': {'dateTime': proposal.get('end'), 'timeZone': proposal.get('timeZone', 'UTC')},
+            })
+            events = self._demo_events()
+            events.append(event)
+            self._persist_demo_events(events)
+            return event['id']
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; calendar event will not be created: %s', proposal.get('title'))
+            return 'gcal-dry-run-event-id'
+
         if self.service is None:
             logger.info('GCalClient not configured; returning stub event id')
             return 'gcal-stub-event-id'
@@ -95,6 +179,21 @@ class GCalClient:
             The list of events
         """
         if self.service is None:
+            if self._is_demo_mode():
+                min_dt = self._parse_filter_time(time_min)
+                max_dt = self._parse_filter_time(time_max)
+                filtered: List[Dict[str, Any]] = []
+                for event in self._demo_events():
+                    start_raw = (event.get('start') or {}).get('dateTime') or (event.get('start') or {}).get('date')
+                    end_raw = (event.get('end') or {}).get('dateTime') or (event.get('end') or {}).get('date')
+                    start_dt = self._parse_filter_time(start_raw)
+                    end_dt = self._parse_filter_time(end_raw) or start_dt
+                    if min_dt and end_dt and end_dt < min_dt:
+                        continue
+                    if max_dt and start_dt and start_dt > max_dt:
+                        continue
+                    filtered.append(event)
+                return filtered[:max_results]
             logger.info('GCalClient not configured; returning empty list')
             return []
         
@@ -124,6 +223,10 @@ class GCalClient:
             The event details, or None if not found
         """
         if self.service is None:
+            if self._is_demo_mode():
+                for event in self._demo_events():
+                    if event.get('id') == event_id:
+                        return event
             logger.info('GCalClient not configured; returning None')
             return None
         
@@ -144,6 +247,38 @@ class GCalClient:
         Returns:
             The ID of the updated event, or None if failed
         """
+        if self._is_demo_mode():
+            events = self._demo_events()
+            next_events: List[Dict[str, Any]] = []
+            found = False
+            for event in events:
+                if event.get('id') != event_id:
+                    next_events.append(event)
+                    continue
+                merged = dict(event)
+                for key, value in updates.items():
+                    if key == 'title':
+                        merged['summary'] = value
+                    elif key == 'notes':
+                        merged['description'] = value
+                    elif key == 'start':
+                        merged['start'] = value if isinstance(value, dict) else {'dateTime': value}
+                    elif key == 'end':
+                        merged['end'] = value if isinstance(value, dict) else {'dateTime': value}
+                    else:
+                        merged[key] = value
+                merged['updated'] = datetime.now(timezone.utc).isoformat()
+                next_events.append(self._normalize_demo_event(merged))
+                found = True
+            if found:
+                self._persist_demo_events(next_events)
+                return event_id
+            return None
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; calendar event %s will not be updated: %s', event_id, updates)
+            return event_id
+
         if self.service is None:
             logger.info('GCalClient not configured; cannot update event')
             return None
@@ -194,6 +329,18 @@ class GCalClient:
         Returns:
             True if successful, False otherwise
         """
+        if self._is_demo_mode():
+            events = self._demo_events()
+            next_events = [event for event in events if event.get('id') != event_id]
+            if len(next_events) == len(events):
+                return False
+            self._persist_demo_events(next_events)
+            return True
+
+        if settings.DRY_RUN:
+            logger.info('DRY_RUN enabled; calendar event %s will not be deleted', event_id)
+            return True
+
         if self.service is None:
             logger.info('GCalClient not configured; cannot delete event')
             return False

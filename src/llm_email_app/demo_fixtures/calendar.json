@@ -1,0 +1,53 @@
+{
+  "events": [
+    {
+      "id": "demo-event-launch-standup",
+      "scenario_id": "schedule_overview",
+      "demo_role": "support",
+      "summary": "Launch standup",
+      "description": "Daily launch coordination with product, ops, and support.",
+      "location": "War room",
+      "start": {
+        "dateTime": "2026-05-07T09:30:00+08:00",
+        "timeZone": "Asia/Hong_Kong"
+      },
+      "end": {
+        "dateTime": "2026-05-07T10:00:00+08:00",
+        "timeZone": "Asia/Hong_Kong"
+      },
+      "updated": "2026-05-05T18:00:00+08:00"
+    },
+    {
+      "id": "demo-event-client-rehearsal-conflict",
+      "scenario_id": "client_launch_conflict",
+      "demo_role": "flagship",
+      "summary": "Exec briefing",
+      "description": "Quarterly briefing with leadership. This intentionally overlaps the demo rehearsal request.",
+      "location": "Board room",
+      "start": {
+        "dateTime": "2026-05-08T15:00:00+08:00",
+        "timeZone": "Asia/Hong_Kong"
+      },
+      "end": {
+        "dateTime": "2026-05-08T15:45:00+08:00",
+        "timeZone": "Asia/Hong_Kong"
+      },
+      "updated": "2026-05-05T18:00:00+08:00"
+    },
+    {
+      "id": "demo-event-offsite-travel",
+      "scenario_id": "schedule_overview",
+      "demo_role": "support",
+      "summary": "Shenzhen product offsite",
+      "description": "Travel and workshop day.",
+      "location": "Shenzhen",
+      "start": {
+        "date": "2026-05-15"
+      },
+      "end": {
+        "date": "2026-05-16"
+      },
+      "updated": "2026-05-04T12:00:00+08:00"
+    }
+  ]
+}

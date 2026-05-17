@@ -1,10 +1,12 @@
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
+from fastapi import HTTPException
 from llm_email_app.auth.google_oauth import get_web_flow, TOKEN_DIR, DEFAULT_SCOPES
 import json
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from typing import Optional, Dict
+from llm_email_app.config import settings
 
 SCOPES = [
     "openid",
@@ -14,12 +16,17 @@ SCOPES = [
 
 
 async def login(request: Request):
-    flow = get_web_flow(scopes=SCOPES)
-    authorization_url, state = flow.authorization_url(
-        access_type="offline", prompt="consent"
-    )
-    request.session["state"] = state
-    return RedirectResponse(authorization_url)
+    if settings.DEMO_MODE:
+        return RedirectResponse("/")
+    try:
+        flow = get_web_flow(scopes=SCOPES)
+        authorization_url, state = flow.authorization_url(
+            access_type="offline", prompt="consent"
+        )
+        request.session["state"] = state
+        return RedirectResponse(authorization_url)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 async def auth_callback(request: Request):

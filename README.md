@@ -1,89 +1,107 @@
-# LLM Email — Summary & Calendar Assistant
+# MailFlow Demo
 
-This project is a Python prototype to summarize emails with LLMs and automatically create calendar events (Google Calendar).
+MailFlow Demo is a FastAPI and React application for exploring email and calendar workflows with a chat-driven assistant. It supports live Google OAuth for Gmail and Google Calendar, and it also includes a self-contained demo mode with local mailbox and calendar fixtures for quick setup.
 
-Features (planned):
-- Fetch emails from Gmail (OAuth2)
-- Summarize emails and extract scheduling intent using OpenAI-format APIs
-- Propose and create calendar events in Google Calendar and Microsoft Graph
-- Safe workflow: dry-run, confirmation, conflict detection
+## What it includes
 
-Quick start
-1. Copy `.env.example` to `.env` and fill credentials for OpenAI, Google OAuth and Microsoft (Azure) app.
-2. customize port for the app if you like (defult 8000), also change the `GOOGLE_OAUTH_REDIRECT_URI` port
-3. Create a Python virtual env and install dependencies:
+- inbox browsing, search, summaries, drafts, and label rules
+- calendar listing, event creation, updates, and deletion
+- chat-driven tool use for email and calendar tasks
+- threaded demo scenarios with pending work items and timeline playback
+- local markdown-based memory storage for assistant context
 
-```powershell
-python -m venv .venv; .\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
+## Repository layout
+
+- `src/llm_email_app/` backend package
+- `frontend/` React SPA served by FastAPI
+- `docs/` architecture, API, and demo documentation
+- `tests/` backend and runtime tests
+- `src/llm_email_app/demo_fixtures/` committed demo mailbox and calendar seeds
+
+## Quick start
+
+1. Copy `.env.example` to `.env`.
+2. Fill `OPENAI_API_KEY`, `OPENAI_MODEL`, and `OPENAI_API_BASE` for your LLM endpoint.
+3. For live Gmail and Calendar access, also fill the Google OAuth variables.
+4. Install dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-3. Run the sample pipeline:
+5. Start the app:
 
-Launch GUI with:
-
-```powershell
-$env:PYTHONPATH='src'; python -m src.llm_email_app.main
-```
-GUI at http://localhost:8000/
-
-The GUI lists recent emails (stubs by default), lets you summarize selected emails using the LLM client (stub if no API key), shows proposed events, and allows creating events (respects the `DRY_RUN` flag in `.env`).
-
-
-## Docker Compose (run-only, no manual image build required)
-
-Use `docker-compose` to build (if configured) and run the application without manually invoking `docker build`.
-
-Examples (PowerShell):
-
-Start the app (will build images if the compose file includes a `build:` section):
-
-```powershell
-docker-compose up -d
+```bash
+PYTHONPATH=src python -m llm_email_app.main
 ```
 
-Start and force rebuild of images (useful after code changes):
+Open `http://localhost:8000`.
 
-```powershell
-docker-compose up -d --build --force-recreate
+## Demo mode
+
+Demo mode skips Google login and loads a local mailbox plus calendar state from committed fixtures. Resetting the demo regenerates dates relative to the current server time, or to `DEMO_REFERENCE_TIME` when that variable is set.
+
+Built-in demo threads:
+
+- resolve a meeting conflict and draft the follow-up reply
+- show the next 7 days of calendar events
+- search for a budget email and summarize it
+
+Recommended `.env` settings for demo mode:
+
+```env
+DRY_RUN=true
+DEMO_MODE=true
+AGENT_ENABLED=true
+OPENAI_API_KEY=...
+OPENAI_API_BASE=http://your-openai-compatible-endpoint
+OPENAI_MODEL=your-model
 ```
 
-Stop and remove containers:
+Optional fixed demo clock:
 
-```powershell
-docker-compose down
+```env
+DEMO_REFERENCE_TIME=2026-05-17T09:00:00+08:00
 ```
 
-Follow logs (all services):
+## Docker
 
-```powershell
-docker-compose logs -f
+Build and run with Docker Compose:
+
+```bash
+docker compose up -d --build
 ```
 
-Follow logs for a specific service:
+Stop the stack:
 
-```powershell
-docker-compose logs -f <service_name>
+```bash
+docker compose down
 ```
 
-Notes and tips:
-- If your `docker-compose.yml` contains a `build:` entry for the backend service, `docker-compose up` will use the repository's `Dockerfile` to build the image automatically — you don't need to run `docker build` separately.
-- Use an `.env` file in the repository root for environment variables referenced by `docker-compose.yml`. Some Compose versions also accept `--env-file .env`.
-- The compose file typically maps `./data` and `./tokens` to container volumes to persist rules, processed state, and OAuth tokens. Ensure those folders exist and are writable.
-- Confirm the exposed ports in `docker-compose.yml` (commonly `8000` for the backend and `3000` for the frontend) and open them in your firewall if required.
+The compose file mounts `data/`, `tmp/`, and `tokens/` so local state persists across container restarts.
+Compose variable substitution reads from `.env`, and the backend now receives the demo-related variables from that file.
+
+## Tests
+
+Run the backend test suite with:
+
+```bash
+PYTHONPATH=src ./.venv/bin/python -m pytest -q tests
+```
+
+Current tests cover demo mode, chat/runtime flows, work-item resumption, email triage, and markdown memory storage.
+
+## Documentation
+
+- `docs/architecture.md`
+- `docs/demo.md`
+- `docs/api.md`
+- `docs/project_structure.md`
 
 ## Notes
-- This scaffold contains skeleton modules for each integration. None of the integrations are production-ready yet — they contain TODOs and placeholders.
-- See `docs/project_structure.md` for architecture and next steps.
-- Automation knobs (optional) live in `.env`:
-	- `BACKGROUND_REFRESH_INTERVAL_MINUTES` (default `10`) controls how often the backend refreshes cached emails/events and runs the labeling pipeline.
-	- `AUTO_LABEL_ENABLED_DEFAULT` (default `false`) defines the initial state of the automation toggle before users change it in Settings.
 
-License: MIT
-
-## Page preview
-
-<img width="1104" height="915" alt="image" src="https://github.com/user-attachments/assets/1877b307-df49-4dff-afe9-fc27fb580a68" />
-<img width="1064" height="858" alt="image" src="https://github.com/user-attachments/assets/7313d32c-860c-4504-baec-ff4de052a954" />
-<img width="1245" height="783" alt="image" src="https://github.com/user-attachments/assets/45440bcf-211e-462f-96f6-aa0d5800061e" />
-
+- `docker-compose.yml` enables `DEMO_MODE=true` by default for a faster first run.
+- The frontend is served directly by FastAPI from `frontend/`; no separate Node build step is required.
+- Legacy proposal and approval endpoints still exist in the backend, but the main demo flow uses threads, work items, and timelines.

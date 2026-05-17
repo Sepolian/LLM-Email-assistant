@@ -24,10 +24,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code
 COPY src/ ./src/
 COPY frontend/ ./frontend/
-COPY data/ ./data/
 
 # Create directories for runtime data
-RUN mkdir -p /app/tmp /app/tokens
+RUN mkdir -p /app/data /app/tmp /app/tokens
 
 # Expose the default port
 EXPOSE 8000

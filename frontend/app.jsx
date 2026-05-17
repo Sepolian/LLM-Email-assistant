@@ -15,6 +15,7 @@ const ModernApp = ()=>{
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null);
+  const [isDemoMode, setIsDemoMode] = useState(false);
   
   // Cache and Prefetch State
   const [emailCache, setEmailCache] = useState({});
@@ -256,6 +257,7 @@ const ModernApp = ()=>{
                 const userData = await userResponse.json();
                 setUser(userData);
                 setIsLoggedIn(true);
+                setIsDemoMode(!!userData.demo_mode);
 
           await hydrateFromSnapshots();
 
@@ -263,11 +265,13 @@ const ModernApp = ()=>{
 
             } else {
                 setIsLoggedIn(false);
+                setIsDemoMode(false);
                  setError("Please login to continue.");
             }
         } catch (err) {
             setError("Failed to fetch data.");
             setIsLoggedIn(false);
+            setIsDemoMode(false);
         } finally {
             setLoading(false);
         }
@@ -325,6 +329,7 @@ const ModernApp = ()=>{
     await fetch('/logout');
     setIsLoggedIn(false);
     setUser(null);
+    setIsDemoMode(false);
     setMailbox(null);
     setCalendarEvents([]);
     setCalendarError(null);
@@ -485,6 +490,11 @@ const ModernApp = ()=>{
           <a href="/chat" onClick={(e) => { e.preventDefault(); navigate('/chat'); }} style={{padding:'8px 12px',borderRadius:8,background: page ==='/chat' ? '#eef2ff':'transparent', textDecoration: 'none', color: 'inherit'}}>{t('nav.chat')}</a>
         </div>)}
         <div style={{display:'flex',gap:8, alignItems: 'center'}}>
+          {isDemoMode && (
+            <span style={{padding:'6px 10px',borderRadius:999,background:'#dbeafe',color:'#1d4ed8',fontSize:12,fontWeight:600}}>
+              {t('nav.demoMode')}
+            </span>
+          )}
           <select 
             value={lang} 
             onChange={(e) => setLanguage(e.target.value)}
@@ -507,6 +517,11 @@ const ModernApp = ()=>{
       </nav>
 
       <main style={{maxWidth:1100,margin:'20px auto'}}>
+        {isDemoMode && (
+          <div style={{marginBottom:12,padding:'10px 12px',background:'#eff6ff',color:'#1d4ed8',borderRadius:8,border:'1px solid #bfdbfe'}}>
+            {t('common.demoBanner')}
+          </div>
+        )}
         {renderContent()}
       </main>
     </div>
